@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'package:archive/archive.dart';
 
 import '../models/video_note.dart';
+import '../models/note_video_link.dart';
 
 /// 定义用户可选择的笔记导出主文件格式。
 enum VideoNoteExportFormat { markdown, json }
@@ -44,21 +45,25 @@ class VideoNoteExportService {
     final Map<String, Uint8List> images = <String, Uint8List>{};
     final Map<String, String> imagePathsByNoteId = <String, String>{};
     for (final VideoNote note in notes) {
-      final String? sourcePath = note.framePath;
-      if (sourcePath == null || sourcePath.trim().isEmpty) {
-        continue;
-      }
-      try {
-        final File file = File(sourcePath);
-        if (!await file.exists()) {
-          continue;
+      final attachments = <String, String>{
+        ...note.attachments,
+        if (note.framePath != null && note.attachments.isEmpty)
+          '__legacy': note.framePath!,
+      };
+      for (final entry in attachments.entries) {
+        try {
+          final file = File(entry.value);
+          if (!await file.exists()) continue;
+          final archivePath = entry.key == '__legacy'
+              ? 'images/${_safeName(note.id)}.${_safeImageExtension(entry.value)}'
+              : 'images/${images.length}-${_safeName(note.id)}.${_safeImageExtension(entry.value)}';
+          images[archivePath] = await file.readAsBytes();
+          imagePathsByNoteId['${note.id}:${entry.key}'] = archivePath;
+          if (entry.key == '__legacy')
+            imagePathsByNoteId[note.id] = archivePath;
+        } catch (_) {
+          /* Preserve the text when an image is unavailable. */
         }
-        final String extension = _safeImageExtension(sourcePath);
-        final String archivePath = 'images/${_safeName(note.id)}.$extension';
-        images[archivePath] = await file.readAsBytes();
-        imagePathsByNoteId[note.id] = archivePath;
-      } catch (_) {
-        // 单张旧截图损坏时继续导出其余文字和可用图片，不让整个任务失败。
       }
     }
     final String mainExtension = switch (format) {
@@ -102,6 +107,21 @@ class VideoNoteExportService {
     );
   }
 
+  /// Rewrite internal attachments and timestamps into portable Markdown links.
+  String _portableMarkdown(VideoNote note, Map<String, String> paths) {
+    var body = note.body;
+    for (final key in note.attachments.keys) {
+      final path = paths['${note.id}:$key'];
+      if (path != null) body = body.replaceAll(']($key)', ']($path)');
+    }
+    return body.replaceAllMapped(RegExp(r'\]\((focubili://video\?[^\s)]*)\)'), (
+      match,
+    ) {
+      final target = NoteVideoLink.parse(match.group(1)!);
+      return target == null ? match.group(0)! : '](${target.webUri})';
+    });
+  }
+
   /// 生成通用 Markdown，元数据使用普通列表，截图使用相对路径便于其他软件读取。
   String _buildMarkdown(
     List<VideoNote> notes,
@@ -124,7 +144,7 @@ class VideoNoteExportService {
         ..writeln();
       if (note.body.isNotEmpty) {
         buffer
-          ..writeln(note.body)
+          ..writeln(_portableMarkdown(note, imagePathsByNoteId))
           ..writeln();
       }
       final String? imagePath = imagePathsByNoteId[note.id];
@@ -153,6 +173,11 @@ class VideoNoteExportService {
               note.toJson(),
             );
             json['framePath'] = imagePathsByNoteId[note.id];
+            json['attachments'] = {
+              for (final key in note.attachments.keys)
+                if (imagePathsByNoteId['${note.id}:$key'] != null)
+                  key: imagePathsByNoteId['${note.id}:$key'],
+            };
             return json;
           })
           .toList(growable: false),
