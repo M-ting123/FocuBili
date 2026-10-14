@@ -451,8 +451,7 @@ mixin _PlayerVideoCoordinator
     await _deactivateFocusPlaybackForCurrentPart();
     if (!_isCurrentVideoNavigation(generation)) return;
     _notesPanelAnimationTimer?.cancel();
-    _flushVideoNoteAutoSave();
-    await _noteSaveCompletion?.future;
+    if (!await _saveCurrentNoteBeforeTransition()) return;
     if (!_isCurrentVideoNavigation(generation)) return;
     _flushCurrentWatchHistoryProgress();
     _flushCurrentLearningListProgress();
@@ -528,6 +527,8 @@ mixin _PlayerVideoCoordinator
       _noteDraftRevision++;
       _noteTitleController.clear();
       _noteBodyController.clear();
+      _noteAttachments = {};
+      _noteEditing = true;
       _notePartCid = targetPart.cid;
       _includeCurrentFrame = false;
       _noteFramePath = null;
