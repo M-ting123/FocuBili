@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 
 import '../../models/note_video_link.dart';
+import 'video_note_frame_viewer_page.dart';
 
 /// A visual document surface. Markdown is only the compatible storage/export
 /// representation; video links and attachments are never edited as source text.
@@ -212,13 +213,30 @@ class _VisualNoteEditorState extends State<VisualNoteEditor> {
   Widget _image(_NoteBlock block) {
     final path = widget.attachments[block.target];
     if (path == null) return const Text('截图文件不可用');
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(8),
-      child: Image.file(
-        File(path),
-        fit: BoxFit.contain,
-        errorBuilder: (_, error, stack) =>
-            const Padding(padding: EdgeInsets.all(16), child: Text('截图文件不可用')),
+    return Tooltip(
+      message: '点击放大',
+      child: InkWell(
+        key: ValueKey('open-note-image-${block.target}'),
+        borderRadius: BorderRadius.circular(8),
+        onTap: () {
+          FocusScope.of(context).unfocus();
+          Navigator.of(context).push<void>(
+            MaterialPageRoute<void>(
+              builder: (_) => VideoNoteFrameViewerPage(framePath: path),
+            ),
+          );
+        },
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(8),
+          child: Image.file(
+            File(path),
+            fit: BoxFit.contain,
+            errorBuilder: (_, error, stack) => const Padding(
+              padding: EdgeInsets.all(16),
+              child: Text('截图文件不可用'),
+            ),
+          ),
+        ),
       ),
     );
   }
@@ -284,7 +302,7 @@ class _VisualNoteEditorState extends State<VisualNoteEditor> {
                   Row(
                     children: [
                       if (block.image)
-                        const Expanded(child: Text('视频截图'))
+                        const Expanded(child: Text('视频截图 · 点击放大'))
                       else
                         Expanded(
                           child: Align(
