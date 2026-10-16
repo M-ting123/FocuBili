@@ -1,5 +1,7 @@
 import 'dart:convert';
 import 'dart:typed_data';
+import 'package:archive/archive.dart';
+import 'video_note.dart';
 
 import 'app_favorite.dart';
 
@@ -10,6 +12,8 @@ class AppFavoritesBackup {
     required List<AppFavoriteFolder> folders,
     required Map<String, List<AppFavoriteItem>> items,
     required this.exportedAt,
+    this.notes = const [],
+    this.assets = const {},
   }) : folders = List.unmodifiable(folders),
        items = Map.unmodifiable({
          for (final folder in folders)
@@ -24,6 +28,8 @@ class AppFavoritesBackup {
   final List<AppFavoriteFolder> folders;
   final Map<String, List<AppFavoriteItem>> items;
   final DateTime exportedAt;
+  final List<VideoNote> notes;
+  final Map<String, Uint8List> assets;
 
   /// 统计收藏记录；同一视频在不同文件夹中分别计数。
   int get itemCount =>
@@ -31,7 +37,7 @@ class AppFavoritesBackup {
 
   /// 生成各系统都能直接保存的文件名，避免日期中的冒号。
   String get fileName =>
-      'FocuBili-favorites-${exportedAt.toUtc().microsecondsSinceEpoch}.json';
+      'FocuBili-favorites-${exportedAt.toUtc().microsecondsSinceEpoch}.${assets.isEmpty ? 'json' : 'zip'}';
 
   /// 序列化为 UTF-8 JSON，并保证导出的文件可以被同一版本完整回导。
   Uint8List toBytes() {
@@ -39,8 +45,9 @@ class AppFavoritesBackup {
       utf8.encode(
         const JsonEncoder.withIndent('  ').convert({
           'format': format,
-          'version': version,
+          'version': notes.isEmpty ? version : 2,
           'exportedAt': exportedAt.toUtc().toIso8601String(),
+          'notes': notes.map((note) => note.toJson()).toList(),
           'folders': [
             for (final folder in folders)
               {
@@ -59,8 +66,17 @@ class AppFavoritesBackup {
         }),
       ),
     );
-    fromBytes(bytes);
-    return bytes;
+    if (assets.isEmpty) {
+      fromBytes(bytes);
+      return bytes;
+    }
+    final archive = Archive()..add(ArchiveFile.bytes('favorites.json', bytes));
+    for (final entry in assets.entries) {
+      archive.add(ArchiveFile.bytes(entry.key, entry.value));
+    }
+    final zip = ZipEncoder().encodeBytes(archive);
+    fromBytes(zip);
+    return zip;
   }
 
   /// 完整校验后才返回备份，拒绝不支持的版本、损坏字段和错误目录引用。
@@ -69,12 +85,35 @@ class AppFavoritesBackup {
       throw const FormatException('收藏夹文件超过 20 MB，请分收藏夹导出后导入。');
     }
     try {
-      final text = utf8.decode(bytes).replaceFirst(RegExp(r'^\uFEFF'), '');
+      final assets = <String, Uint8List>{};
+      var jsonBytes = bytes;
+      if (bytes.length >= 4 && bytes[0] == 0x50 && bytes[1] == 0x4b) {
+        final archive = ZipDecoder().decodeBytes(bytes, verify: true);
+        var size = 0;
+        final seen = <String>{};
+        for (final file in archive) {
+          if (!file.isFile) continue;
+          size += file.size;
+          if (size > maxBytes || !seen.add(file.name)) {
+            throw const FormatException();
+          }
+          if (file.name == 'favorites.json') {
+            jsonBytes = file.content as List<int>;
+          } else {
+            if (!RegExp(r'^images/[0-9]+\.png$').hasMatch(file.name)) {
+              throw const FormatException();
+            }
+            assets[file.name] = Uint8List.fromList(file.content as List<int>);
+          }
+        }
+        if (!seen.contains('favorites.json')) throw const FormatException();
+      }
+      final text = utf8.decode(jsonBytes).replaceFirst(RegExp(r'^\uFEFF'), '');
       final root = jsonDecode(text);
       if (root is! Map || root['format'] != format) {
         throw const FormatException('请选择焦点哔哩导出的软件收藏夹 JSON 文件。');
       }
-      if (root['version'] != version) {
+      if (root['version'] != version && root['version'] != 2) {
         throw const FormatException('不支持这个收藏夹备份版本，请升级焦点哔哩后重试。');
       }
       final exportedAt = _date(root, 'exportedAt');
@@ -125,7 +164,25 @@ class AppFavoritesBackup {
         );
         items[id] = entries;
       }
+      final notes = <VideoNote>[];
+      final noteIds = <String>{};
+      if (root['notes'] != null && root['notes'] is! List) {
+        throw const FormatException();
+      }
+      for (final raw in (root['notes'] as List? ?? [])) {
+        if (raw is! Map) throw const FormatException();
+        final note = VideoNote.tryParse(Map<String, dynamic>.from(raw));
+        if (note == null ||
+            !noteIds.add(note.id) ||
+            !items.containsKey(note.folderId) ||
+            note.attachments.values.any((path) => !assets.containsKey(path))) {
+          throw const FormatException();
+        }
+        notes.add(note);
+      }
       return AppFavoritesBackup(
+        notes: notes,
+        assets: assets,
         folders: folders,
         items: items,
         exportedAt: exportedAt,
@@ -168,9 +225,11 @@ class AppFavoritesBackupImportResult {
     required this.createdFolders,
     required this.importedItems,
     required this.duplicates,
+    this.importedNotes = 0,
   });
 
   final int createdFolders;
   final int importedItems;
   final int duplicates;
+  final int importedNotes;
 }

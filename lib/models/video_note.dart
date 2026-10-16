@@ -144,14 +144,21 @@ class VideoNote {
         parsedUpdatedAt == null) {
       return null;
     }
+    if (json.containsKey('formatVersion') && json['formatVersion'] is! int) {
+      return null;
+    }
     final version = json['formatVersion'] is int
         ? json['formatVersion'] as int
         : 1;
+    if (version < 1 || version > 2) return null;
     final attachments = <String, String>{};
+    if (json['attachments'] != null && json['attachments'] is! Map) return null;
     if (json['attachments'] is Map) {
       for (final entry in (json['attachments'] as Map).entries) {
         if (entry.key is String && entry.value is String) {
           attachments[entry.key as String] = entry.value as String;
+        } else {
+          return null;
         }
       }
     }
@@ -201,7 +208,8 @@ class VideoNote {
       updatedAt: parsedUpdatedAt.toLocal(),
       position: Duration(milliseconds: positionMs.toInt().clamp(0, 604800000)),
       videoCoverUrl: videoCoverUrl is String ? videoCoverUrl.trim() : '',
-      framePath: framePath is String && framePath.trim().isNotEmpty
+      framePath:
+          version >= 2 && framePath is String && framePath.trim().isNotEmpty
           ? framePath.trim()
           : null,
     );

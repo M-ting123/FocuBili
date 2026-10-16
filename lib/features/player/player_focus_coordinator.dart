@@ -386,11 +386,21 @@ mixin _PlayerFocusCoordinator on State<PlayerPage> {
   }
 
   /// 离开关联视频前鼓励继续；坚持退出时保存画面、原因并保持任务可继续。
+  Future<bool> _saveCurrentNoteBeforeTransition();
+
   Future<void> _requestLeavePlayer() async {
     if (_leaveRequestInProgress || !mounted) {
       return;
     }
     _leaveRequestInProgress = true;
+    if (!await _saveCurrentNoteBeforeTransition()) {
+      _leaveRequestInProgress = false;
+      return;
+    }
+    if (!mounted) {
+      _leaveRequestInProgress = false;
+      return;
+    }
     final FocusTimerController? controller = _boundFocusController;
     final FocusSession? session = controller?.activeSession;
     bool mayLeave = true;

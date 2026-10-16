@@ -1,8 +1,13 @@
 import 'dart:io';
 import 'dart:async';
 import '../../models/note_video_link.dart';
+import '../../models/note_markdown.dart';
 import '../../services/external_link_service.dart';
 import 'markdown_note_editor.dart';
+import 'note_folder_picker.dart';
+import '../../services/app_favorites_service.dart';
+import '../../services/video_note_export_service.dart';
+import 'package:file_picker/file_picker.dart';
 
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
@@ -34,6 +39,7 @@ class VideoNoteDetailPage extends StatefulWidget {
     required this.note,
     required this.noteService,
     this.videoService,
+    this.favoritesService,
     this.playerBuilder,
     this.shareService = const VideoNoteShareService(),
   });
@@ -41,6 +47,7 @@ class VideoNoteDetailPage extends StatefulWidget {
   final VideoNote note;
   final VideoNoteService noteService;
   final BilibiliService? videoService;
+  final AppFavoritesService? favoritesService;
   final VideoNotePlayerBuilder? playerBuilder;
   final VideoNoteShareService shareService;
 
@@ -138,6 +145,12 @@ class _VideoNoteDetailPageState extends State<VideoNoteDetailPage> {
       final VideoNote updated = _note.copyWith(
         title: title,
         body: _bodyController.text,
+        attachments: {
+          for (final entry in _note.attachments.entries)
+            if (noteImageReferences(_bodyController.text).contains(entry.key))
+              entry.key: entry.value,
+        },
+        clearFrame: _note.attachments.isNotEmpty,
         updatedAt: DateTime.now(),
       );
       await widget.noteService.saveNote(updated);
@@ -650,6 +663,52 @@ class _VideoNoteDetailPageState extends State<VideoNoteDetailPage> {
     );
   }
 
+  /// Persist the document before changing its local folder.
+  Future<void> _moveToFolder() async {
+    await _saveNote();
+    if (!mounted || _hasUnsavedChanges) return;
+    try {
+      final id = await showNoteFolderPicker(
+        context,
+        widget.favoritesService ?? AppFavoritesService(),
+      );
+      if (id == null || !mounted) return;
+      final moved = _note.copyWith(folderId: id, updatedAt: DateTime.now());
+      await widget.noteService.saveNote(moved);
+      if (mounted) setState(() => _note = moved);
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('移动失败，请重试。')));
+      }
+    }
+  }
+
+  /// Export the current saved document with all screenshots using the system picker.
+  Future<void> _exportMarkdown() async {
+    await _saveNote();
+    if (!mounted || _hasUnsavedChanges) return;
+    try {
+      final package = await const VideoNoteExportService().buildPackage([
+        _note,
+      ], VideoNoteExportFormat.markdown);
+      await FilePicker.saveFile(
+        dialogTitle: '导出 Markdown 笔记',
+        fileName: package.fileName,
+        bytes: package.bytes,
+        type: FileType.custom,
+        allowedExtensions: [package.extension],
+      );
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('导出失败，请重试。')));
+      }
+    }
+  }
+
   /// 构建带未保存拦截、顶部操作和响应式编辑工作台的笔记详情页。
   @override
   Widget build(BuildContext context) {
@@ -663,6 +722,16 @@ class _VideoNoteDetailPageState extends State<VideoNoteDetailPage> {
         appBar: AppBar(
           title: const Text('笔记详情'),
           actions: <Widget>[
+            IconButton(
+              onPressed: _saving ? null : _moveToFolder,
+              icon: const Icon(Icons.folder_outlined),
+              tooltip: '移动到收藏夹',
+            ),
+            IconButton(
+              onPressed: _saving ? null : _exportMarkdown,
+              icon: const Icon(Icons.download_outlined),
+              tooltip: '导出 Markdown',
+            ),
             IconButton(
               key: const Key('share-note-from-detail'),
               onPressed: _saving ? null : _openSharePreview,

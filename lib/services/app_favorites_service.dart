@@ -1,5 +1,10 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
+import 'dart:typed_data';
+import 'package:path_provider/path_provider.dart';
+import '../models/video_note.dart';
+import 'video_note_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/app_favorite.dart';
 import '../models/app_favorites_backup.dart';
@@ -11,14 +16,26 @@ typedef AppFavoritesPreferencesLoader = Future<SharedPreferences> Function();
 /// Stores local folders independently of the online account.
 class AppFavoritesService {
   /// Accepts an optional preference provider without reading account data.
-  AppFavoritesService({AppFavoritesPreferencesLoader? preferencesLoader})
-    : _preferencesLoader = preferencesLoader;
+  AppFavoritesService({
+    AppFavoritesPreferencesLoader? preferencesLoader,
+    this.noteAssetDirectoryLoader,
+  }) : _preferencesLoader = preferencesLoader;
   static const _foldersKey = 'app_favorites.folders_v1';
   static const _itemsPrefix = 'app_favorites.items_v1.';
   static Future<void> _queue = Future<void>.value();
   static int _idSequence = 0;
   final AppFavoritesPreferencesLoader? _preferencesLoader;
+  final Future<Directory> Function()? noteAssetDirectoryLoader;
   final Map<String, Future<int?>> _partCounts = {};
+  VideoNoteService get noteService =>
+      VideoNoteService(preferencesLoader: _loadPreferences);
+  static const learningNotesFolderId = 'learning-notes';
+  static AppFavoriteFolder get learningNotesFolder => AppFavoriteFolder(
+    id: learningNotesFolderId,
+    name: '学习笔记',
+    createdAt: DateTime(2026),
+    updatedAt: DateTime(2026),
+  );
 
   /// Hydrates missing legacy P counts once per service, without blocking folder rendering.
   Future<int?> resolvePartCount(
@@ -92,9 +109,16 @@ class AppFavoritesService {
   /// Restores folders without changing the original stored content.
   Future<List<AppFavoriteFolder>> loadFolders() async {
     final prefs = await _loadPreferences();
-    return List.unmodifiable(
-      _decode(prefs.getString(_foldersKey), AppFavoriteFolder.fromJson),
+    final folders = _decode(
+      prefs.getString(_foldersKey),
+      AppFavoriteFolder.fromJson,
     );
+    final notes = await noteService.loadNotes();
+    if (notes.any((note) => note.folderId == learningNotesFolderId) &&
+        !folders.any((folder) => folder.id == learningNotesFolderId)) {
+      folders.add(learningNotesFolder);
+    }
+    return List.unmodifiable(folders);
   }
 
   /// Creates a folder in the shared write queue, returning null on persistence failure.
@@ -129,6 +153,8 @@ class AppFavoritesService {
 
   /// Removes metadata before item cleanup; failed cleanup restores the folder list.
   Future<bool> deleteFolder(String id) => _mutate(() async {
+    if (id == learningNotesFolderId) return false;
+    await noteService.moveFolder(id, learningNotesFolderId);
     final folders = await loadFolders();
     if (!await _saveFolders(
       folders.where((folder) => folder.id != id).toList(),
@@ -214,7 +240,26 @@ class AppFavoritesService {
         for (final folder in folders) {
           items[folder.id] = await loadItems(folder.id);
         }
+        final folderIds = folders.map((folder) => folder.id).toSet();
+        final selectedNotes = (await noteService.loadNotes()).where(
+          (note) => folderIds.contains(note.folderId),
+        );
+        final assets = <String, Uint8List>{};
+        final notes = <VideoNote>[];
+        for (final note in selectedNotes) {
+          final paths = <String, String>{};
+          for (final entry in note.attachments.entries) {
+            final file = File(entry.value);
+            if (!await file.exists()) throw StateError('笔记图片缺失，请检查后再备份。');
+            final path = 'images/${assets.length}.png';
+            assets[path] = await file.readAsBytes();
+            paths[entry.key] = path;
+          }
+          notes.add(note.copyWith(attachments: paths, clearFrame: true));
+        }
         return AppFavoritesBackup(
+          notes: notes,
+          assets: assets,
           folders: folders,
           items: items,
           exportedAt: DateTime.now(),
@@ -224,112 +269,175 @@ class AppFavoritesService {
   /// 同标识或同名目录合并，按目录内 BV 去重；本机名称、元数据和已有视频优先。
   Future<AppFavoritesBackupImportResult> importBackup(
     AppFavoritesBackup backup,
-  ) => _mutate(() async {
-    // 再次校验公开模型，保证通过代码构造的备份也不能绕过完整文件校验。
-    backup.toBytes();
-    final prefs = await _loadPreferences();
-    final folders = (await loadFolders()).toList();
-    final existingFolders = folders.toList();
-    final sourceIds = backup.folders.map((folder) => folder.id).toSet();
-    final claimedTargets = <String>{};
-    final pending = <String, List<AppFavoriteItem>>{};
-    var created = 0, imported = 0, duplicates = 0;
-    for (final source in backup.folders) {
-      final byId = folders.where((folder) => folder.id == source.id);
-      // 不把备份中两个独立同名目录合在一起；相同标识的本机目录也预留给其来源。
-      final byName = existingFolders.where(
-        (folder) =>
-            folder.name.trim() == source.name.trim() &&
-            !claimedTargets.contains(folder.id) &&
-            !sourceIds.contains(folder.id),
-      );
-      final AppFavoriteFolder target;
-      if (byId.isNotEmpty) {
-        target = byId.first;
-      } else if (byName.isNotEmpty) {
-        target = byName.first;
-      } else {
-        target = source;
-        folders.add(target);
-        created++;
-      }
-      claimedTargets.add(target.id);
-      final entries =
-          pending[target.id] ?? (await loadItems(target.id)).toList();
-      final seen = entries.map((item) => item.bvid).toSet();
-      for (final item in backup.items[source.id]!) {
-        if (!seen.add(item.bvid)) {
-          duplicates++;
-          continue;
-        }
-        entries.add(
-          AppFavoriteItem(
-            folderId: target.id,
-            bvid: item.bvid,
-            title: item.title,
-            coverUrl: item.coverUrl,
-            ownerName: item.ownerName,
-            durationText: item.durationText,
-            addedAt: item.addedAt,
-            partCount: item.partCount,
-          ),
+  ) => _mutate(
+    () => noteService.withExclusiveWrite(() async {
+      // 再次校验公开模型，保证通过代码构造的备份也不能绕过完整文件校验。
+      backup.toBytes();
+      final prefs = await _loadPreferences();
+      final folders = (await loadFolders()).toList();
+      final existingFolders = folders.toList();
+      final sourceIds = backup.folders.map((folder) => folder.id).toSet();
+      final claimedTargets = <String>{};
+      final pending = <String, List<AppFavoriteItem>>{};
+      final folderMapping = <String, String>{};
+      var created = 0, imported = 0, duplicates = 0;
+      for (final source in backup.folders) {
+        final byId = folders.where((folder) => folder.id == source.id);
+        // 不把备份中两个独立同名目录合在一起；相同标识的本机目录也预留给其来源。
+        final byName = existingFolders.where(
+          (folder) =>
+              folder.name.trim() == source.name.trim() &&
+              !claimedTargets.contains(folder.id) &&
+              !sourceIds.contains(folder.id),
         );
-        imported++;
+        final AppFavoriteFolder target;
+        if (byId.isNotEmpty) {
+          target = byId.first;
+        } else if (byName.isNotEmpty) {
+          target = byName.first;
+        } else {
+          target = source;
+          folders.add(target);
+          created++;
+        }
+        claimedTargets.add(target.id);
+        folderMapping[source.id] = target.id;
+        final entries =
+            pending[target.id] ?? (await loadItems(target.id)).toList();
+        final seen = entries.map((item) => item.bvid).toSet();
+        for (final item in backup.items[source.id]!) {
+          if (!seen.add(item.bvid)) {
+            duplicates++;
+            continue;
+          }
+          entries.add(
+            AppFavoriteItem(
+              folderId: target.id,
+              bvid: item.bvid,
+              title: item.title,
+              coverUrl: item.coverUrl,
+              ownerName: item.ownerName,
+              durationText: item.durationText,
+              addedAt: item.addedAt,
+              partCount: item.partCount,
+            ),
+          );
+          imported++;
+        }
+        pending[target.id] = entries;
       }
-      pending[target.id] = entries;
-    }
-    if (created == 0 && imported == 0) {
+      final localNotes = (await noteService.loadNotesStrict()).toList();
+      final originalNotes = prefs.getString(VideoNoteService.storageKey);
+      final noteIds = localNotes.map((note) => note.id).toSet();
+      final freshNotes = backup.notes
+          .where((note) => !noteIds.contains(note.id))
+          .toList();
+      final importedPaths = <String>[];
+      Directory? assetDirectory;
+      if (freshNotes.any((note) => note.attachments.isNotEmpty)) {
+        final support =
+            await (noteAssetDirectoryLoader?.call() ??
+                getApplicationSupportDirectory());
+        assetDirectory = await Directory(
+          '${support.path}${Platform.pathSeparator}note_import_${DateTime.now().microsecondsSinceEpoch}',
+        ).create(recursive: true);
+      }
+      try {
+        for (final note in freshNotes) {
+          final paths = <String, String>{};
+          for (final entry in note.attachments.entries) {
+            final bytes = backup.assets[entry.value];
+            if (bytes == null) throw const FormatException('备份缺少笔记图片');
+            final file = File(
+              '${assetDirectory!.path}${Platform.pathSeparator}${importedPaths.length}.png',
+            );
+            await file.writeAsBytes(bytes, flush: true);
+            importedPaths.add(file.path);
+            paths[entry.key] = file.path;
+          }
+          localNotes.add(
+            note.copyWith(
+              folderId: folderMapping[note.folderId],
+              attachments: paths,
+            ),
+          );
+        }
+      } catch (_) {
+        for (final path in importedPaths) {
+          await File(path).delete();
+        }
+        rethrow;
+      }
+      final importedNotes = freshNotes.length;
+      if (created == 0 && imported == 0 && importedNotes == 0) {
+        return AppFavoritesBackupImportResult(
+          createdFolders: 0,
+          importedItems: 0,
+          duplicates: duplicates + backup.notes.length,
+        );
+      }
+      // 写入前保存涉及键的原始文本；任一写入失败时恢复，包括偏好层的内存缓存。
+      final updates = <String, String>{
+        if (importedNotes > 0)
+          VideoNoteService.storageKey: jsonEncode(
+            localNotes.map((note) => note.toJson()).toList(),
+          ),
+        if (originalNotes != null &&
+            prefs.getString(VideoNoteService.legacyBackupKey) == null)
+          VideoNoteService.legacyBackupKey: originalNotes,
+        for (final entry in pending.entries)
+          '$_itemsPrefix${entry.key}': jsonEncode(
+            entry.value.map((item) => item.toJson()).toList(),
+          ),
+        if (created > 0)
+          _foldersKey: jsonEncode(
+            folders.map((folder) => folder.toJson()).toList(),
+          ),
+      };
+      final originals = {
+        for (final key in updates.keys) key: prefs.getString(key),
+      };
+      final attempted = <String>[];
+      try {
+        for (final entry in updates.entries) {
+          attempted.add(entry.key);
+          if (!await prefs.setString(entry.key, entry.value)) {
+            throw StateError('write failed');
+          }
+        }
+      } catch (_) {
+        var restored = true;
+        for (final key in attempted.reversed) {
+          try {
+            final raw = originals[key];
+            final saved = raw == null
+                ? await prefs.remove(key)
+                : await prefs.setString(key, raw);
+            if (!saved) restored = false;
+          } catch (_) {
+            restored = false;
+          }
+        }
+        if (restored) {
+          for (final path in importedPaths) {
+            try {
+              await File(path).delete();
+            } catch (_) {}
+          }
+        }
+        throw StateError(
+          restored ? '导入保存失败，已恢复原有收藏，请重试。' : '导入保存失败，部分内容可能已写入，请检查存储后重试。',
+        );
+      }
+      noteService.notifyChanges(freshNotes);
       return AppFavoritesBackupImportResult(
-        createdFolders: 0,
-        importedItems: 0,
-        duplicates: duplicates,
+        createdFolders: created,
+        importedItems: imported,
+        importedNotes: importedNotes,
+        duplicates: duplicates + backup.notes.length - importedNotes,
       );
-    }
-    // 写入前保存涉及键的原始文本；任一写入失败时恢复，包括偏好层的内存缓存。
-    final updates = <String, String>{
-      for (final entry in pending.entries)
-        '$_itemsPrefix${entry.key}': jsonEncode(
-          entry.value.map((item) => item.toJson()).toList(),
-        ),
-      if (created > 0)
-        _foldersKey: jsonEncode(
-          folders.map((folder) => folder.toJson()).toList(),
-        ),
-    };
-    final originals = {
-      for (final key in updates.keys) key: prefs.getString(key),
-    };
-    final attempted = <String>[];
-    try {
-      for (final entry in updates.entries) {
-        attempted.add(entry.key);
-        if (!await prefs.setString(entry.key, entry.value)) {
-          throw StateError('write failed');
-        }
-      }
-    } catch (_) {
-      var restored = true;
-      for (final key in attempted.reversed) {
-        try {
-          final raw = originals[key];
-          final saved = raw == null
-              ? await prefs.remove(key)
-              : await prefs.setString(key, raw);
-          if (!saved) restored = false;
-        } catch (_) {
-          restored = false;
-        }
-      }
-      throw StateError(
-        restored ? '导入保存失败，已恢复原有收藏，请重试。' : '导入保存失败，部分内容可能已写入，请检查存储后重试。',
-      );
-    }
-    return AppFavoritesBackupImportResult(
-      createdFolders: created,
-      importedItems: imported,
-      duplicates: duplicates,
-    );
-  });
+    }),
+  );
 
   /// Saves metadata and reports a rejected or failed write to the caller.
   Future<bool> _saveFolders(List<AppFavoriteFolder> folders) async {

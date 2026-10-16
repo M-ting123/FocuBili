@@ -18,13 +18,20 @@ class VideoNoteService {
   // Kept for source compatibility; documents are never truncated.
   static const int maximumEntries = 500;
   static const String legacyBackupKey = 'video_timepoint_notes_original_backup';
-  static Future<void> _queue = Future<void>.value();
+  static Future<void>? _queue;
 
   /// Serialize mutations across instances to prevent lost autosaves.
-  Future<T> _mutate<T>(Future<T> Function() operation) {
-    final next = _queue.then((_) => operation());
-    _queue = next.then<void>((_) {}, onError: (Object e, StackTrace s) {});
-    return next;
+  Future<T> _mutate<T>(Future<T> Function() operation) async {
+    final previous = _queue;
+    final completion = Completer<void>.sync();
+    _queue = completion.future;
+    if (previous != null) await previous;
+    try {
+      return await operation();
+    } finally {
+      if (identical(_queue, completion.future)) _queue = null;
+      completion.complete();
+    }
   }
 
   /// Preserve the original JSON before any rewrite.
@@ -37,6 +44,56 @@ class VideoNoteService {
     }
   }
 
+  /// Restore the cached previous value as well as disk contents after rejected writes.
+  Future<void> _writeNotes(
+    SharedPreferences prefs,
+    List<VideoNote> notes,
+  ) async {
+    final original = prefs.getString(storageKey);
+    try {
+      if (!await prefs.setString(
+        storageKey,
+        jsonEncode(notes.map((note) => note.toJson()).toList()),
+      )) {
+        throw StateError('笔记保存失败');
+      }
+    } catch (_) {
+      try {
+        if (original == null) {
+          await prefs.remove(storageKey);
+        } else {
+          await prefs.setString(storageKey, original);
+        }
+      } catch (_) {
+        /* Preserve the failure so the editor retains the draft. */
+      }
+      rethrow;
+    }
+  }
+
+  /// Coordinate backup import with autosave operations across service instances.
+  Future<T> withExclusiveWrite<T>(Future<T> Function() operation) =>
+      _mutate(operation);
+
+  /// Move documents before deleting their folder, in one persisted operation.
+  Future<void> moveFolder(String source, String target) => _mutate(() async {
+    final prefs = await _preferencesLoader();
+    final notes = _decodeNotes(prefs.getString(storageKey));
+    if (!notes.any((note) => note.folderId == source)) return;
+    await _backup(prefs);
+    final moved = notes
+        .map(
+          (note) => note.folderId == source
+              ? note.copyWith(folderId: target, updatedAt: DateTime.now())
+              : note,
+        )
+        .toList();
+    await _writeNotes(prefs, moved);
+    for (final note in notes.where((note) => note.folderId == source)) {
+      _changes.add(note.bvid);
+    }
+  });
+
   static final StreamController<String> _changes =
       StreamController<String>.broadcast();
 
@@ -44,6 +101,19 @@ class VideoNoteService {
   static Stream<String> get changes => _changes.stream;
 
   final VideoNotePreferencesLoader _preferencesLoader;
+
+  /// Read persisted data without hiding corruption from backup transactions.
+  Future<List<VideoNote>> loadNotesStrict() async {
+    final prefs = await _preferencesLoader();
+    return _decodeNotes(prefs.getString(storageKey));
+  }
+
+  /// Refresh open workspaces after a transactional backup import.
+  void notifyChanges(Iterable<VideoNote> notes) {
+    for (final bvid in notes.map((note) => note.bvid).toSet()) {
+      _changes.add(bvid);
+    }
+  }
 
   /// 读取全部合法笔记，并按最近更新时间从新到旧排列。
   Future<List<VideoNote>> loadNotes() async {
@@ -109,13 +179,7 @@ class VideoNoteService {
           right.updatedAt.compareTo(left.updatedAt),
     );
     final List<VideoNote> limited = notes;
-    final saved = await preferences.setString(
-      storageKey,
-      jsonEncode(
-        limited.map((VideoNote item) => item.toJson()).toList(growable: false),
-      ),
-    );
-    if (!saved) throw StateError('笔记保存失败');
+    await _writeNotes(preferences, limited);
     _changes.add(normalized.bvid);
     final retainedPaths = notes
         .expand(
@@ -146,13 +210,7 @@ class VideoNoteService {
     );
     await _backup(preferences);
     notes.removeWhere((VideoNote item) => item.id == normalizedId);
-    final saved = await preferences.setString(
-      storageKey,
-      jsonEncode(
-        notes.map((VideoNote item) => item.toJson()).toList(growable: false),
-      ),
-    );
-    if (!saved) throw StateError('笔记删除失败');
+    await _writeNotes(preferences, notes);
     if (removed != null) _changes.add(removed.bvid);
     final retainedPaths = notes
         .expand(

@@ -52,6 +52,7 @@ class _AppFavoriteFoldersPageState extends State<AppFavoriteFoldersPage> {
   bool _transferring = false;
   final TextEditingController _searchController = TextEditingController();
   Map<String, List<AppFavoriteItem>> _items = {};
+  Map<String, int> _noteCounts = {};
 
   /// 初始化服务并在首次进入时读取一次软件收藏夹。
   @override
@@ -67,6 +68,14 @@ class _AppFavoriteFoldersPageState extends State<AppFavoriteFoldersPage> {
       final List<AppFavoriteFolder> folders = await _favoritesService
           .loadFolders();
       final items = <String, List<AppFavoriteItem>>{};
+      final noteCounts = <String, int>{};
+      for (final note in await _favoritesService.noteService.loadNotes()) {
+        noteCounts.update(
+          note.folderId,
+          (count) => count + 1,
+          ifAbsent: () => 1,
+        );
+      }
       for (final folder in folders) {
         items[folder.id] = await _favoritesService.loadItems(folder.id);
       }
@@ -77,6 +86,7 @@ class _AppFavoriteFoldersPageState extends State<AppFavoriteFoldersPage> {
         _isLoading = false;
         _folders = folders;
         _items = items;
+        _noteCounts = noteCounts;
       });
     } catch (_) {
       if (mounted) {
@@ -135,7 +145,7 @@ class _AppFavoriteFoldersPageState extends State<AppFavoriteFoldersPage> {
           title: const Text('导入软件收藏夹'),
           content: SingleChildScrollView(
             child: Text(
-              '文件包含 ${backup.folders.length} 个收藏夹、${backup.itemCount} 条收藏。\n\n'
+              '文件包含 ${backup.folders.length} 个收藏夹、${backup.itemCount} 个视频、${backup.notes.length} 篇笔记。\n\n'
               '相同标识或同名收藏夹将合并，同一收藏夹内重复视频会跳过，保留已有收藏。',
             ),
           ),
@@ -158,7 +168,7 @@ class _AppFavoriteFoldersPageState extends State<AppFavoriteFoldersPage> {
       await _loadFolders();
       if (mounted) {
         _showMessage(
-          '导入完成：新建 ${result.createdFolders} 个收藏夹，新增 ${result.importedItems} 条收藏，跳过 ${result.duplicates} 条重复。',
+          '导入完成：新建 ${result.createdFolders} 个收藏夹，新增 ${result.importedItems} 个视频、${result.importedNotes} 篇笔记，跳过 ${result.duplicates} 条重复。',
         );
       }
     } on FormatException catch (error) {
@@ -186,7 +196,7 @@ class _AppFavoriteFoldersPageState extends State<AppFavoriteFoldersPage> {
       final saved = await widget.fileService.saveBackup(backup);
       if (saved && mounted) {
         _showMessage(
-          '已导出 ${backup.folders.length} 个收藏夹、${backup.itemCount} 条收藏。',
+          '已导出 ${backup.folders.length} 个收藏夹、${backup.itemCount} 个视频、${backup.notes.length} 篇笔记。',
         );
       }
     } on FormatException catch (error) {
@@ -308,12 +318,16 @@ class _AppFavoriteFoldersPageState extends State<AppFavoriteFoldersPage> {
 
   /// 确认后删除软件收藏夹及其中的全部视频。
   Future<void> _deleteFolder(AppFavoriteFolder folder) async {
+    if (folder.id == AppFavoritesService.learningNotesFolderId) {
+      _showMessage('“学习笔记”是默认收藏夹，可以删除其中的笔记或将它们移到其他收藏夹。');
+      return;
+    }
     try {
       final bool? confirmed = await showDialog<bool>(
         context: context,
         builder: (BuildContext dialogContext) => AlertDialog(
           title: const Text('删除软件收藏夹'),
-          content: Text('将删除“${folder.name}”及其中收藏的全部视频，且无法恢复。'),
+          content: Text('将删除“${folder.name}”及其中收藏的视频；笔记会移入“学习笔记”，不会删除。'),
           actions: <Widget>[
             TextButton(
               onPressed: () => Navigator.of(dialogContext).pop(false),
@@ -587,6 +601,7 @@ class _AppFavoriteFoldersPageState extends State<AppFavoriteFoldersPage> {
             key: Key('app-favorite-folder-${folder.id}'),
             title: folder.name,
             count: items.length,
+            noteCount: _noteCounts[folder.id] ?? 0,
             coverUrl: covers.isEmpty ? '' : covers.first.coverUrl,
             actions: _buildFolderActions(folder),
             onTap: () => unawaited(_openFolder(folder)),

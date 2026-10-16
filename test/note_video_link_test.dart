@@ -3,10 +3,22 @@ import 'dart:io';
 import 'package:archive/archive.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:focubili/models/note_video_link.dart';
+import 'package:focubili/models/note_markdown.dart';
 import 'package:focubili/models/video_note.dart';
 import 'package:focubili/services/video_note_export_service.dart';
 
 void main() {
+  test(
+    'Markdown image references preserve titles and reference-style attachments',
+    () {
+      expect(
+        noteImageReferences(
+          '![一](images/a.png "截图")\n\n![二][frame]\n\n[frame]: images/b.png\n\n`![代码](images/unused.png)`',
+        ),
+        {'images/a.png', 'images/b.png'},
+      );
+    },
+  );
   test('timestamp preserves milliseconds and part identity', () {
     const link = NoteVideoLink(
       'BV1GJ411x7h7',

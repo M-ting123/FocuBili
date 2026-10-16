@@ -8,6 +8,7 @@ class FavoriteFolderCard extends StatelessWidget {
     super.key,
     required this.title,
     required this.count,
+    this.noteCount = 0,
     this.coverUrl = '',
     this.available = true,
     this.onTap,
@@ -15,6 +16,7 @@ class FavoriteFolderCard extends StatelessWidget {
   });
   final String title;
   final int count;
+  final int noteCount;
   final String coverUrl;
   final bool available;
   final VoidCallback? onTap;
@@ -92,7 +94,9 @@ class FavoriteFolderCard extends StatelessWidget {
                       ),
                       const SizedBox(height: 6),
                       Text(
-                        available ? '$count 个视频' : '收藏夹已失效',
+                        available
+                            ? '$count 个视频${noteCount > 0 ? '、$noteCount 篇笔记' : ''}'
+                            : '收藏夹已失效',
                         style: Theme.of(context).textTheme.bodySmall?.copyWith(
                           color: available
                               ? Theme.of(context).colorScheme.onSurfaceVariant
