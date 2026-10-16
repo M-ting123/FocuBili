@@ -525,6 +525,10 @@ mixin _PlayerNotesWorkspace on State<PlayerPage> {
         if (draftRevision == _noteDraftRevision) {
           _editingVideoNote = note;
           _noteFramePath = note.framePath;
+          if (enteredTitle.isEmpty &&
+              _noteTitleController.text.trim().isEmpty) {
+            _noteTitleController.text = title;
+          }
           if (_noteBodyController.text == body) {
             _noteAttachments = Map.of(attachments);
           }

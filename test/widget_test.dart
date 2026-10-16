@@ -3495,6 +3495,33 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
+  testWidgets('清空 Markdown 标题后完成编辑不会重复保存', (tester) async {
+    final notes = VideoNoteService();
+    await tester.binding.setSurfaceSize(const Size(1080, 2400));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PlayerPage(
+          interactionService: _FakePlayerInteractionService(),
+          video: _createCollectionVideo(),
+          playbackService: _FakePlaybackService(),
+          videoNoteService: notes,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('portrait-note-button')));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byKey(const Key('markdown-note-body')), '保留正文');
+    await tester.enterText(find.byKey(const Key('note-title-field')), '');
+    await tester.tap(find.text('完成编辑'));
+    await tester.pumpAndSettle();
+    expect((await notes.loadNotes()).single.title, '未命名笔记');
+    expect(find.byKey(const Key('markdown-note-body')), findsNothing);
+    expect(find.text('编辑'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
   testWidgets('Markdown 文档插入多个当前时间戳并跨分P跳转', (tester) async {
     final service = _FakePlaybackService();
     final notes = VideoNoteService();
