@@ -23,7 +23,7 @@ import '../../features/profile/user_profile_page.dart';
 import '../../models/video_note.dart';
 import '../../models/note_video_link.dart';
 import '../../models/note_markdown.dart';
-import '../../features/notes/markdown_note_editor.dart';
+import '../../features/notes/visual_note_editor.dart';
 import '../../features/notes/note_folder_picker.dart';
 import '../../platform/app_platform.dart';
 import '../../models/video_preview.dart';

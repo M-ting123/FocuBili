@@ -1110,7 +1110,7 @@ void main() {
     await tester.tap(find.text('编辑'));
     await tester.pump();
     await tester.enterText(
-      find.byKey(const Key('markdown-note-body')),
+      find.byKey(const Key('visual-note-body')),
       '当前尚未保存的草稿',
     );
     await tester.tap(find.byKey(const ValueKey('player-note-flag-hit-0')));
@@ -1119,7 +1119,7 @@ void main() {
     await tester.pump();
     expect(
       tester
-          .widget<TextField>(find.byKey(const Key('markdown-note-body')))
+          .widget<TextField>(find.byKey(const Key('visual-note-body')))
           .controller!
           .text,
       '当前尚未保存的草稿',
@@ -3400,9 +3400,7 @@ void main() {
     expect(playerAfterDrag, playerBeforeDrag);
 
     await tester.enterText(find.byKey(const Key('note-title-field')), '关键观点');
-    final Finder portraitBodyField = find.byKey(
-      const Key('markdown-note-body'),
-    );
+    final Finder portraitBodyField = find.byKey(const Key('visual-note-body'));
     await tester.tap(portraitBodyField);
     await tester.enterText(portraitBodyField, '这是正文内容。');
     await tester.pump();
@@ -3480,7 +3478,7 @@ void main() {
       'Screenshot failure',
     );
     await tester.enterText(
-      find.byKey(const Key('markdown-note-body')),
+      find.byKey(const Key('visual-note-body')),
       'Keep this text',
     );
     await tester.tap(find.widgetWithText(TextButton, '截图'));
@@ -3495,7 +3493,7 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
-  testWidgets('清空 Markdown 标题后完成编辑不会重复保存', (tester) async {
+  testWidgets('清空笔记标题后完成编辑不会重复保存', (tester) async {
     final notes = VideoNoteService();
     await tester.binding.setSurfaceSize(const Size(1080, 2400));
     addTearDown(() => tester.binding.setSurfaceSize(null));
@@ -3512,17 +3510,17 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('portrait-note-button')));
     await tester.pumpAndSettle();
-    await tester.enterText(find.byKey(const Key('markdown-note-body')), '保留正文');
+    await tester.enterText(find.byKey(const Key('visual-note-body')), '保留正文');
     await tester.enterText(find.byKey(const Key('note-title-field')), '');
     await tester.tap(find.text('完成编辑'));
     await tester.pumpAndSettle();
     expect((await notes.loadNotes()).single.title, '未命名笔记');
-    expect(find.byKey(const Key('markdown-note-body')), findsNothing);
+    expect(find.byKey(const Key('visual-note-body')), findsNothing);
     expect(find.text('编辑'), findsOneWidget);
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
-  testWidgets('Markdown 文档插入多个当前时间戳并跨分P跳转', (tester) async {
+  testWidgets('图文笔记编辑和阅读均显示时间标签并跨分P跳转', (tester) async {
     final service = _FakePlaybackService();
     final notes = VideoNoteService();
     await tester.binding.setSurfaceSize(const Size(1080, 2400));
@@ -3552,37 +3550,21 @@ void main() {
     await service.seekTo(const Duration(milliseconds: 72345));
     await tester.pump();
     await tester.tap(find.widgetWithText(TextButton, '时间戳'));
+    await tester.pump();
+    expect(find.widgetWithText(ActionChip, '00:12'), findsOneWidget);
+    expect(find.widgetWithText(ActionChip, '01:12'), findsOneWidget);
+    expect(find.textContaining('focubili://'), findsNothing);
     await tester.tap(find.text('完成编辑'));
     await tester.pumpAndSettle();
     final saved = (await notes.loadNotes()).single;
     expect(saved.body, contains('ms=12345'));
     expect(saved.body, contains('cid=137649200'));
     expect(saved.body, contains('ms=72345'));
-    final preview = find.descendant(
-      of: find.byType(SelectableText),
-      matching: find.byType(EditableText),
-    );
-    final firstRenderer = tester
-        .state<EditableTextState>(preview)
-        .renderEditable;
-    final firstBox = firstRenderer
-        .getBoxesForSelection(
-          const TextSelection(baseOffset: 0, extentOffset: 5),
-        )
-        .first;
-    await tester.tapAt(firstRenderer.localToGlobal(firstBox.toRect().center));
+    await tester.tap(find.widgetWithText(ActionChip, '00:12'));
     await tester.pumpAndSettle();
     expect(service.openedCid, 137649199);
     expect(service._position, const Duration(milliseconds: 12345));
-    final secondRenderer = tester
-        .state<EditableTextState>(preview)
-        .renderEditable;
-    final secondBox = secondRenderer
-        .getBoxesForSelection(
-          const TextSelection(baseOffset: 5, extentOffset: 10),
-        )
-        .first;
-    await tester.tapAt(secondRenderer.localToGlobal(secondBox.toRect().center));
+    await tester.tap(find.widgetWithText(ActionChip, '01:12'));
     await tester.pumpAndSettle();
     expect(service.openedCid, 137649200);
     expect(service._position, const Duration(milliseconds: 72345));
@@ -3669,7 +3651,7 @@ void main() {
     );
     expect(openedPanelSlide.offset, Offset.zero);
     expect(openedPanelSlide.duration, const Duration(milliseconds: 280));
-    expect(find.byKey(const Key('markdown-note-body')), findsOneWidget);
+    expect(find.byKey(const Key('visual-note-body')), findsOneWidget);
     tester
         .widget<IconButton>(
           find.byKey(const Key('collapse-fullscreen-note-list')),

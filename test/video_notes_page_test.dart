@@ -135,6 +135,50 @@ void main() {
     SharedPreferences.setMockInitialValues(<String, Object>{});
   });
 
+  testWidgets('已有图文笔记编辑时直接显示时间标签和截图并自动保存移除结果', (tester) async {
+    final service = await _createPageNoteService();
+    final note = _createPageNote().copyWith(
+      body:
+          '前文[01:02](focubili://video?bvid=BV1GJ411x7h7&cid=100&page=1&ms=62000)![截图](images/one.png)后文',
+      attachments: {'images/one.png': 'missing-test-frame.png'},
+    );
+    await service.saveNote(note);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: VideoNoteDetailPage(
+          note: note,
+          noteService: service,
+          videoService: _FakeNoteVideoService(),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('save-note-detail')));
+    await tester.pumpAndSettle();
+    expect(find.widgetWithText(ActionChip, '01:02'), findsOneWidget);
+    expect(find.byTooltip('移除截图'), findsOneWidget);
+    expect(find.textContaining('focubili://'), findsNothing);
+    await tester.tap(find.byTooltip('移除截图'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 900));
+    // Attachment cleanup uses real filesystem I/O outside Flutter's fake clock.
+    await tester.runAsync(() async {
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+    });
+    await tester.pumpAndSettle();
+    final saved = (await service.loadNotes()).single;
+    expect(
+      saved.body,
+      '前文[01:02](focubili://video?bvid=BV1GJ411x7h7&cid=100&page=1&ms=62000)后文',
+    );
+    expect(saved.attachments, isEmpty);
+    await tester.tap(find.byKey(const Key('save-note-detail')));
+    await tester.pumpAndSettle();
+    expect(find.widgetWithText(ActionChip, '01:02'), findsOneWidget);
+    expect(find.byKey(const Key('visual-note-body')), findsNothing);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
   /// 验证搜索、独立详情编辑和列表菜单删除可以组成完整管理流程。
   testWidgets('时间点笔记页面可搜索并进入独立详情编辑和删除', (WidgetTester tester) async {
     final VideoNoteService service = await _createPageNoteService();
@@ -168,7 +212,7 @@ void main() {
     expect(find.byType(VideoNoteDetailPage), findsOneWidget);
     expect(find.text('笔记详情'), findsOneWidget);
 
-    expect(find.byKey(const Key('markdown-note-body')), findsNothing);
+    expect(find.byKey(const Key('visual-note-body')), findsNothing);
     await tester.tap(find.byKey(const Key('save-note-detail')));
     await tester.pumpAndSettle();
 
@@ -176,10 +220,7 @@ void main() {
       find.byKey(const Key('note-detail-title-field')),
       '修改后的笔记',
     );
-    await tester.enterText(
-      find.byKey(const Key('markdown-note-body')),
-      '修改后的正文',
-    );
+    await tester.enterText(find.byKey(const Key('visual-note-body')), '修改后的正文');
     await tester.tap(find.byKey(const Key('save-note-detail')));
     await tester.pumpAndSettle();
     expect((await service.loadNotes()).single.body, '修改后的正文');
