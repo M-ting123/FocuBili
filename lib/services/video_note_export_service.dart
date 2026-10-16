@@ -59,8 +59,9 @@ class VideoNoteExportService {
               : 'images/${images.length}-${_safeName(note.id)}.${_safeImageExtension(entry.value)}';
           images[archivePath] = await file.readAsBytes();
           imagePathsByNoteId['${note.id}:${entry.key}'] = archivePath;
-          if (entry.key == '__legacy')
+          if (entry.key == '__legacy') {
             imagePathsByNoteId[note.id] = archivePath;
+          }
         } catch (_) {
           /* Preserve the text when an image is unavailable. */
         }
@@ -112,7 +113,7 @@ class VideoNoteExportService {
     var body = note.body;
     for (final key in note.attachments.keys) {
       final path = paths['${note.id}:$key'];
-      if (path != null) body = body.replaceAll(']($key)', ']($path)');
+      if (path != null) body = body.replaceAll(key, path);
     }
     return body.replaceAllMapped(RegExp(r'\]\((focubili://video\?[^\s)]*)\)'), (
       match,

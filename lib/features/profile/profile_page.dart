@@ -472,7 +472,7 @@ class _ProfilePageState extends State<ProfilePage> {
       ),
       _ProfileTile(
         icon: Icons.edit_note_rounded,
-        title: '时间点笔记',
+        title: '学习笔记',
         id: 'video-notes',
         // 时间点笔记入口函数打开本机笔记的统一查看与管理页面。
         onTap: () => Navigator.of(context).pushNamed(AppRoutes.videoNotes),

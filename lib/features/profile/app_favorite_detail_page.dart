@@ -6,6 +6,8 @@ import '../../core/layout/adaptive_page_frame.dart';
 import '../../core/layout/adaptive_two_column_list.dart';
 import '../../core/router/app_router.dart';
 import '../../models/app_favorite.dart';
+import '../../models/video_note.dart';
+import '../notes/video_note_detail_page.dart';
 import '../../services/app_favorites_service.dart';
 import '../../services/bilibili_service.dart';
 import 'app_favorite_video_tile.dart';
@@ -40,6 +42,7 @@ class _AppFavoriteDetailPageState extends State<AppFavoriteDetailPage> {
   late final BilibiliService _bilibiliService;
   List<AppFavoriteItem> _items = const <AppFavoriteItem>[];
   bool _isLoading = true;
+  List<VideoNote> _notes = [];
   final _searchController = TextEditingController();
 
   /// Releases the within-folder video search input.
@@ -64,12 +67,16 @@ class _AppFavoriteDetailPageState extends State<AppFavoriteDetailPage> {
       final List<AppFavoriteItem> items = await _favoritesService.loadItems(
         widget.folder.id,
       );
+      final notes = (await _favoritesService.noteService.loadNotes())
+          .where((note) => note.folderId == widget.folder.id)
+          .toList();
       if (!mounted) {
         return;
       }
       setState(() {
         _isLoading = false;
         _items = items;
+        _notes = notes;
       });
     } catch (_) {
       if (mounted) {
@@ -165,7 +172,7 @@ class _AppFavoriteDetailPageState extends State<AppFavoriteDetailPage> {
     if (_isLoading) {
       return const Center(child: CircularProgressIndicator());
     }
-    if (_items.isEmpty) {
+    if (_items.isEmpty && _notes.isEmpty) {
       return const Center(
         key: Key('app-favorite-detail-empty'),
         child: Padding(
@@ -186,17 +193,47 @@ class _AppFavoriteDetailPageState extends State<AppFavoriteDetailPage> {
     final items = _items
         .where((item) => item.matchesQuery(_searchController.text))
         .toList();
-    if (items.isEmpty) return const Center(child: Text('没有匹配的收藏视频'));
+    final query = _searchController.text.toLowerCase();
+    final notes = _notes
+        .where((note) => note.title.toLowerCase().contains(query))
+        .toList();
+    if (items.isEmpty && notes.isEmpty) {
+      return const Center(child: Text('没有匹配的收藏内容'));
+    }
     return RefreshIndicator(
       onRefresh: _loadItems,
       child: AdaptiveTwoColumnList(
         key: const Key('app-favorite-items-list'),
         physics: const AlwaysScrollableScrollPhysics(),
         padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
-        itemCount: items.length,
+        itemCount: items.length + notes.length,
         mainAxisSpacing: 8,
         itemBuilder: (BuildContext context, int index) {
-          return _buildItemCard(items[index]);
+          if (index < items.length) return _buildItemCard(items[index]);
+          final note = notes[index - items.length];
+          return Card(
+            child: ListTile(
+              leading: const Icon(Icons.description_outlined),
+              title: Text(note.title),
+              subtitle: Text(
+                '${note.videoTitle}\n更新：${note.updatedAt.toLocal()}',
+              ),
+              isThreeLine: true,
+              onTap: () async {
+                await Navigator.of(context).push<void>(
+                  MaterialPageRoute(
+                    builder: (_) => VideoNoteDetailPage(
+                      note: note,
+                      noteService: _favoritesService.noteService,
+                      favoritesService: _favoritesService,
+                      videoService: _bilibiliService,
+                    ),
+                  ),
+                );
+                if (mounted) await _loadItems();
+              },
+            ),
+          );
         },
       ),
     );
@@ -241,7 +278,7 @@ class _AppFavoriteDetailPageState extends State<AppFavoriteDetailPage> {
                   const Icon(Icons.bookmark_rounded, size: 18),
                   const SizedBox(width: 8),
                   Text(
-                    '共 ${_items.length} 个视频',
+                    '共 ${_items.length} 个视频、${_notes.length} 篇笔记',
                     style: Theme.of(context).textTheme.bodySmall,
                   ),
                 ],

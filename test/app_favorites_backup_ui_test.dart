@@ -39,7 +39,12 @@ class MemoryFavorites extends AppFavoritesService {
 
   @override
   Future<List<AppFavoriteItem>> loadItems(String folderId) async =>
-      backup?.items[folderId] ?? [];
+      (backup?.items[folderId] ?? [])
+          .map(
+            (item) =>
+                AppFavoriteItem.fromJson({...item.toJson(), 'coverUrl': ''})!,
+          )
+          .toList();
 
   @override
   Future<int> totalItemCount() async => backup?.itemCount ?? 0;
@@ -110,7 +115,7 @@ void main() {
         findsOneWidget,
       );
       await choose(tester, 'import-app-favorites-file');
-      expect(find.textContaining('3 个收藏夹、3 条收藏'), findsOneWidget);
+      expect(find.textContaining('3 个收藏夹、3 个视频、0 篇笔记'), findsOneWidget);
       await tester.tap(find.text('取消'));
       await tester.pumpAndSettle();
       expect(await favorites.loadFolders(), isEmpty);

@@ -4,6 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:focubili/models/video_note.dart';
 import 'package:focubili/services/video_note_service.dart';
+import 'app_favorites_backup_test.dart' show FailingPreferences;
 
 VideoNote note(String id, {Map<String, String> attachments = const {}}) =>
     VideoNote(
@@ -24,6 +25,23 @@ VideoNote note(String id, {Map<String, String> attachments = const {}}) =>
 
 void main() {
   setUp(() => SharedPreferences.setMockInitialValues({}));
+  test(
+    'rejected save restores cached document and retains referenced screenshots',
+    () async {
+      final base = await SharedPreferences.getInstance();
+      final service = VideoNoteService(preferencesLoader: () async => base);
+      await service.saveNote(note('a'));
+      final failing = FailingPreferences(base, failOnWrite: 2);
+      final failingService = VideoNoteService(
+        preferencesLoader: () async => failing,
+      );
+      await expectLater(
+        failingService.saveNote(note('a').copyWith(body: '新的内容')),
+        throwsStateError,
+      );
+      expect((await service.loadNotes()).single.body, note('a').body);
+    },
+  );
   test(
     'legacy migration preserves text, timestamp, screenshot and original backup',
     () async {

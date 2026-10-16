@@ -108,6 +108,7 @@ class MarkdownNoteEditor extends StatelessWidget {
         ),
         TextField(
           key: const Key('markdown-note-body'),
+          enabled: true,
           controller: controller,
           minLines: 8,
           maxLines: null,

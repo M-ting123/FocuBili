@@ -527,6 +527,7 @@ mixin _PlayerVideoCoordinator
       _noteDraftRevision++;
       _noteTitleController.clear();
       _noteBodyController.clear();
+      _noteDraftId = null;
       _noteAttachments = {};
       _noteEditing = true;
       _notePartCid = targetPart.cid;

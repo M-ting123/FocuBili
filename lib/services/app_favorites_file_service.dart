@@ -15,7 +15,7 @@ class AppFavoritesFileService {
     final result = await FilePicker.pickFiles(
       dialogTitle: '导入软件收藏夹',
       type: FileType.custom,
-      allowedExtensions: ['json'],
+      allowedExtensions: ['json', 'zip'],
       withReadStream: true,
       lockParentWindow: true,
     );
@@ -54,7 +54,7 @@ class AppFavoritesFileService {
         dialogTitle: '导出软件收藏夹',
         fileName: backup.fileName,
         type: FileType.custom,
-        allowedExtensions: ['json'],
+        allowedExtensions: ['json', 'zip'],
         bytes: backup.toBytes(),
         lockParentWindow: true,
       ) !=

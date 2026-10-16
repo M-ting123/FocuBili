@@ -15,11 +15,13 @@ mixin _PlayerNotesWorkspace on State<PlayerPage> {
   Timer? _noteAutoSaveTimer;
   List<VideoNote> _currentVideoNotes = const <VideoNote>[];
   VideoNote? _editingVideoNote;
+  String? _noteDraftId;
   Duration _notePosition = Duration.zero;
   int _notePartCid = 0;
   bool _notesOpen = false;
   bool _noteEditing = true;
   bool _noteCapturing = false;
+  String _noteFolderId = AppFavoritesService.learningNotesFolderId;
   Map<String, String> _noteAttachments = {};
   bool _notesOverlayMounted = false;
   bool _notesLoading = false;
@@ -82,7 +84,43 @@ mixin _PlayerNotesWorkspace on State<PlayerPage> {
     _notesRequestGeneration++;
     unawaited(_noteChangesSubscription?.cancel());
     _notesPanelAnimationTimer?.cancel();
-    _flushVideoNoteAutoSave();
+    // Disposal cannot call setState. Persist the final snapshot without rebuilding.
+    if (_hasNoteDraftChanges) {
+      final now = DateTime.now();
+      final part = _findVideoNotePart(_notePartCid);
+      final snapshot =
+          (_editingVideoNote ??
+                  VideoNote(
+                    id: _noteDraftId ??=
+                        '${_activeVideo.bvid}-${now.microsecondsSinceEpoch}',
+                    bvid: _activeVideo.bvid,
+                    videoTitle: _activeVideo.title,
+                    ownerName: _activeVideo.ownerName,
+                    partCid: part.cid,
+                    partPageNumber: part.pageNumber,
+                    partTitle: part.title,
+                    title: _noteTitleController.text.trim().isEmpty
+                        ? '未命名笔记'
+                        : _noteTitleController.text.trim(),
+                    body: _noteBodyController.text,
+                    createdAt: now,
+                    updatedAt: now,
+                    position: _notePosition,
+                    videoCoverUrl: _activeVideo.thumbnailUrl,
+                  ))
+              .copyWith(
+                title: _noteTitleController.text.trim().isEmpty
+                    ? '未命名笔记'
+                    : _noteTitleController.text.trim(),
+                body: _noteBodyController.text,
+                attachments: _noteAttachments,
+                folderId: _noteFolderId,
+                updatedAt: now,
+              );
+      unawaited(
+        _videoNoteService.saveNote(snapshot).catchError((Object error) {}),
+      );
+    }
     _noteAutoSaveTimer?.cancel();
     _noteTitleController.dispose();
     _noteBodyController.dispose();
@@ -157,6 +195,20 @@ mixin _PlayerNotesWorkspace on State<PlayerPage> {
 
   /// 清空编辑器并把当前真实播放位置作为下一条笔记的时间点。
   /// Persist all pending edits before changing the document or closing its panel.
+  bool get _hasNoteDraftChanges {
+    final saved = _editingVideoNote;
+    if (saved == null) {
+      return _noteBodyController.text.isNotEmpty ||
+          _noteAttachments.isNotEmpty ||
+          (_noteTitleController.text.isNotEmpty &&
+              _noteTitleController.text != '${_activeVideo.title}＋笔记');
+    }
+    return saved.title != _noteTitleController.text.trim() ||
+        saved.body != _noteBodyController.text ||
+        saved.folderId != _noteFolderId ||
+        !mapEquals(saved.attachments, _noteAttachments);
+  }
+
   Future<bool> _saveCurrentNoteBeforeTransition() async {
     if (_noteCapturing) {
       _showTransientSnackBar('请等待截图完成。');
@@ -167,6 +219,21 @@ mixin _PlayerNotesWorkspace on State<PlayerPage> {
     await _noteSaveCompletion?.future;
     if (!mounted) return false;
     if (_noteTitleController.text.isEmpty && _noteBodyController.text.isEmpty) {
+      return true;
+    }
+    if (_editingVideoNote == null &&
+        _noteBodyController.text.isEmpty &&
+        _noteTitleController.text == '${_activeVideo.title}＋笔记' &&
+        _noteAttachments.isEmpty) {
+      return true;
+    }
+    final saved = _editingVideoNote;
+    if (saved != null &&
+        saved.title == _noteTitleController.text.trim() &&
+        saved.body == _noteBodyController.text &&
+        saved.folderId == _noteFolderId &&
+        mapEquals(saved.attachments, _noteAttachments)) {
+      _noteLastSaveSucceeded = true;
       return true;
     }
     await _saveVideoNote(automatic: true);
@@ -199,9 +266,11 @@ mixin _PlayerNotesWorkspace on State<PlayerPage> {
     setState(() {
       _noteDraftRevision += 1;
       _editingVideoNote = null;
+      _noteDraftId = null;
       _noteTitleController.text = '${_activeVideo.title}＋笔记';
       _noteEditing = true;
       _noteAttachments = {};
+      _noteFolderId = AppFavoritesService.learningNotesFolderId;
       _noteBodyController.clear();
       _notePosition = _playbackSnapshot.position;
       _notePartCid = _currentPart.cid;
@@ -255,8 +324,10 @@ mixin _PlayerNotesWorkspace on State<PlayerPage> {
     setState(() {
       _noteDraftRevision += 1;
       _editingVideoNote = note;
+      _noteDraftId = note.id;
       _noteEditing = false;
       _noteAttachments = Map.of(note.attachments);
+      _noteFolderId = note.folderId;
       _noteTitleController.text = note.title;
       _noteBodyController.text = note.body;
       _notePosition = note.position;
@@ -311,20 +382,6 @@ mixin _PlayerNotesWorkspace on State<PlayerPage> {
       _noteAutoSaveTimer = null;
       unawaited(_saveVideoNote(automatic: true));
     });
-  }
-
-  /// 立即提交仍在等待去抖的草稿，供新建、关闭、换视频和离开播放器前调用。
-  void _flushVideoNoteAutoSave() {
-    final Timer? timer = _noteAutoSaveTimer;
-    if (timer == null) {
-      return;
-    }
-    timer.cancel();
-    _noteAutoSaveTimer = null;
-    if (_noteTitleController.text.trim().isNotEmpty ||
-        _noteBodyController.text.trim().isNotEmpty) {
-      unawaited(_saveVideoNote(automatic: true));
-    }
   }
 
   /// 等待原生播放器把目标时间点真正渲染到 Surface，再执行截图。
@@ -384,9 +441,11 @@ mixin _PlayerNotesWorkspace on State<PlayerPage> {
     }
     final String enteredTitle = _noteTitleController.text.trim();
     final String body = _noteBodyController.text;
+    final folderId = _noteFolderId;
     final attachments = <String, String>{
       for (final entry in _noteAttachments.entries)
-        if (body.contains('](${entry.key})')) entry.key: entry.value,
+        if (noteImageReferences(body).contains(entry.key))
+          entry.key: entry.value,
     };
     if (enteredTitle.isEmpty && !automatic) {
       _showTransientSnackBar('请先填写笔记标题。');
@@ -428,7 +487,8 @@ mixin _PlayerNotesWorkspace on State<PlayerPage> {
       final DateTime now = DateTime.now();
       final VideoNote note = existing == null
           ? VideoNote(
-              id: '${noteVideo.bvid}-${now.microsecondsSinceEpoch}',
+              id: _noteDraftId ??=
+                  '${noteVideo.bvid}-${now.microsecondsSinceEpoch}',
               bvid: noteVideo.bvid,
               videoTitle: noteVideo.title,
               ownerName: noteVideo.ownerName,
@@ -438,6 +498,7 @@ mixin _PlayerNotesWorkspace on State<PlayerPage> {
               title: title,
               body: body,
               attachments: attachments,
+              folderId: folderId,
               createdAt: now,
               updatedAt: now,
               position: notePosition,
@@ -448,6 +509,7 @@ mixin _PlayerNotesWorkspace on State<PlayerPage> {
               title: title,
               body: body,
               attachments: attachments,
+              folderId: folderId,
               updatedAt: now,
               position: notePosition,
               framePath: framePath,
@@ -463,8 +525,9 @@ mixin _PlayerNotesWorkspace on State<PlayerPage> {
         if (draftRevision == _noteDraftRevision) {
           _editingVideoNote = note;
           _noteFramePath = note.framePath;
-          if (_noteBodyController.text == body)
+          if (_noteBodyController.text == body) {
             _noteAttachments = Map.of(attachments);
+          }
         }
         _noteSaving = false;
         _noteAutoSaving = false;
@@ -572,6 +635,18 @@ mixin _PlayerNotesWorkspace on State<PlayerPage> {
     }
   }
 
+  Future<void> _chooseNoteFolder() async {
+    if (!await _saveCurrentNoteBeforeTransition() || !mounted) return;
+    try {
+      final id = await showNoteFolderPicker(context, AppFavoritesService());
+      if (id == null || !mounted) return;
+      setState(() => _noteFolderId = id);
+      await _saveVideoNote();
+    } catch (_) {
+      if (mounted) _showTransientSnackBar('无法读取收藏夹，请重试。');
+    }
+  }
+
   /// Insert the actual current playback position; never reuse the note creation time.
   void _insertNoteTimestamp() {
     final target = NoteVideoLink(
@@ -634,8 +709,9 @@ mixin _PlayerNotesWorkspace on State<PlayerPage> {
       final parts = _activeVideo.parts.where((part) => part.cid == target.cid);
       if (parts.isEmpty) throw StateError('视频分 P 不存在');
       if (_currentPart.cid != target.cid) await _changePart(parts.first);
-      if (mounted && _currentPart.cid == target.cid)
+      if (mounted && _currentPart.cid == target.cid) {
         await _seekNativeTo(target.position);
+      }
     } catch (_) {
       if (mounted) _showTransientSnackBar('无法跳转到这个时间戳，请重试。');
     }
@@ -649,6 +725,11 @@ mixin _PlayerNotesWorkspace on State<PlayerPage> {
         Wrap(
           crossAxisAlignment: WrapCrossAlignment.center,
           children: [
+            IconButton(
+              onPressed: () => unawaited(_chooseNoteFolder()),
+              icon: const Icon(Icons.folder_outlined),
+              tooltip: '选择笔记收藏夹',
+            ),
             if (_editingVideoNote != null)
               TextButton(
                 onPressed: () => unawaited(_jumpToSelectedVideoNotePosition()),
@@ -670,16 +751,19 @@ mixin _PlayerNotesWorkspace on State<PlayerPage> {
               child: Text(_noteEditing ? '完成编辑' : '编辑'),
             ),
             TextButton(
+              key: const Key('save-video-note'),
               onPressed: () => unawaited(_saveVideoNote()),
               child: const Text('保存'),
             ),
             IconButton(
+              key: const Key('close-video-note-panel'),
               onPressed: () => unawaited(_closeVideoNotes()),
               icon: const Icon(Icons.close),
               tooltip: '关闭笔记',
             ),
             if (_editingVideoNote != null)
               IconButton(
+                key: const Key('delete-video-note'),
                 onPressed: () => unawaited(_deleteEditingVideoNote()),
                 icon: const Icon(Icons.delete_outline),
                 tooltip: '删除笔记',
@@ -691,7 +775,14 @@ mixin _PlayerNotesWorkspace on State<PlayerPage> {
           controller: _noteTitleController,
           readOnly: !_noteEditing,
           onChanged: _handleVideoNoteDraftChanged,
-          decoration: const InputDecoration(labelText: '笔记名称'),
+          style: Theme.of(
+            context,
+          ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w900),
+          decoration: const InputDecoration(
+            labelText: '笔记名称',
+            border: InputBorder.none,
+            filled: false,
+          ),
         ),
         const SizedBox(height: 12),
         MarkdownNoteEditor(

@@ -596,7 +596,9 @@ extension _PlayerPageView on _PlayerPageState {
     final bool workspaceLayout =
         !fullscreenLayout &&
         (AdaptiveLayout.usesWorkspace(screenSize) ||
-            (_appPlatform == AppPlatform.windows && screenSize.width >= 700));
+            (_notesOpen &&
+                _appPlatform == AppPlatform.windows &&
+                screenSize.width >= 700));
     final extraControlRow = screenSize.width < 6 * controlSize.button
         ? controlSize.button
         : 0.0;

@@ -1107,8 +1107,10 @@ void main() {
     expect(find.text('选择笔记'), findsOneWidget);
     await tester.tap(find.byKey(const ValueKey('choose-note-同秒A')));
     await tester.pumpAndSettle();
+    await tester.tap(find.text('编辑'));
+    await tester.pump();
     await tester.enterText(
-      find.byKey(const Key('note-body-field')),
+      find.byKey(const Key('markdown-note-body')),
       '当前尚未保存的草稿',
     );
     await tester.tap(find.byKey(const ValueKey('player-note-flag-hit-0')));
@@ -1117,7 +1119,7 @@ void main() {
     await tester.pump();
     expect(
       tester
-          .widget<TextField>(find.byKey(const Key('note-body-field')))
+          .widget<TextField>(find.byKey(const Key('markdown-note-body')))
           .controller!
           .text,
       '当前尚未保存的草稿',
@@ -3398,7 +3400,9 @@ void main() {
     expect(playerAfterDrag, playerBeforeDrag);
 
     await tester.enterText(find.byKey(const Key('note-title-field')), '关键观点');
-    final Finder portraitBodyField = find.byKey(const Key('note-body-field'));
+    final Finder portraitBodyField = find.byKey(
+      const Key('markdown-note-body'),
+    );
     await tester.tap(portraitBodyField);
     await tester.enterText(portraitBodyField, '这是正文内容。');
     await tester.pump();
@@ -3407,34 +3411,36 @@ void main() {
     await tester.pump(const Duration(milliseconds: 900));
     expect(tester.testTextInput.isVisible, isTrue);
     expect(tester.widget<TextField>(portraitBodyField).enabled, isTrue);
-    final frameOption = tester.widget<FilterChip>(
-      find.byKey(const Key('include-current-frame')),
-    );
-    expect(frameOption.showCheckmark, isFalse);
-    expect(frameOption.onSelected, isNotNull);
+    expect(find.widgetWithText(TextButton, '截图'), findsOneWidget);
     // 停止输入后，草稿会在去抖时间内自动写入本机，不依赖手动保存按钮。
     await tester.pumpAndSettle();
     expect(await noteService.loadNotes(), hasLength(1));
     expect((await noteService.loadNotes()).single.body, '这是正文内容。');
-    // 模拟写笔记期间视频继续播放，截图仍应回到新建笔记时锁定的 00:00。
+    // 新的文档截图捕获点击时刻正在显示的画面。
     await playbackService.seekTo(const Duration(seconds: 75));
     await tester.pump();
-    await tester.tap(find.byKey(const Key('include-current-frame')));
+    await tester.tap(find.widgetWithText(TextButton, '截图'));
+    await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('save-video-note')));
     await tester.pumpAndSettle();
 
     final List<VideoNote> notes = await noteService.loadNotes();
     expect(notes, hasLength(1));
     expect(notes.single.title, '关键观点');
-    expect(notes.single.body, '这是正文内容。');
-    expect(notes.single.framePath, 'C:\\fake-video-note-frame.jpg');
+    expect(notes.single.body, contains('这是正文内容。'));
+    expect(notes.single.body, contains('![视频截图]'));
+    expect(notes.single.attachments, hasLength(1));
+    expect(
+      notes.single.attachments.values.single,
+      'C:\\fake-video-note-frame.jpg',
+    );
     expect(playbackService.frameCaptureRequests, 1);
-    expect(playbackService.frameCapturePositions, <Duration>[Duration.zero]);
+    expect(playbackService.frameCapturePositions, <Duration>[
+      const Duration(seconds: 75),
+    ]);
     expect(playbackService.frameCaptureCids, <int?>[137649199]);
     expect(playbackService._position, const Duration(seconds: 75));
     expect(playbackService._isPlaying, isTrue);
-    expect(find.byKey(const Key('regular-note-part-label')), findsOneWidget);
-    expect(find.text('P1'), findsNWidgets(2));
     expect(
       find.byKey(Key('portrait-video-note-part-${notes.single.id}')),
       findsOneWidget,
@@ -3474,17 +3480,86 @@ void main() {
       'Screenshot failure',
     );
     await tester.enterText(
-      find.byKey(const Key('note-body-field')),
+      find.byKey(const Key('markdown-note-body')),
       'Keep this text',
     );
-    await tester.tap(find.byKey(const Key('include-current-frame')));
+    await tester.tap(find.widgetWithText(TextButton, '截图'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('截取当前画面失败'), findsOneWidget);
     await tester.tap(find.byKey(const Key('save-video-note')));
     await tester.pumpAndSettle();
     final saved = (await notes.loadNotes()).single;
     expect(saved.body, 'Keep this text');
     expect(saved.framePath, isNull);
     expect(service.frameCaptureRequests, 1);
-    expect(find.textContaining('笔记文字已保存，截图未成功'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('Markdown 文档插入多个当前时间戳并跨分P跳转', (tester) async {
+    final service = _FakePlaybackService();
+    final notes = VideoNoteService();
+    await tester.binding.setSurfaceSize(const Size(1080, 2400));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PlayerPage(
+          interactionService: _FakePlayerInteractionService(),
+          video: _createCollectionVideo(),
+          playbackService: service,
+          videoNoteService: notes,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('portrait-note-button')));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byKey(const Key('note-title-field')), '跨课时笔记');
+    await service.seekTo(const Duration(milliseconds: 12345));
+    await tester.pump();
+    await tester.tap(find.widgetWithText(TextButton, '时间戳'));
+    await tester.pump();
+    tester
+        .widget<IconButton>(find.byKey(const Key('next-part-button')))
+        .onPressed!();
+    await tester.pumpAndSettle();
+    await service.seekTo(const Duration(milliseconds: 72345));
+    await tester.pump();
+    await tester.tap(find.widgetWithText(TextButton, '时间戳'));
+    await tester.tap(find.text('完成编辑'));
+    await tester.pumpAndSettle();
+    final saved = (await notes.loadNotes()).single;
+    expect(saved.body, contains('ms=12345'));
+    expect(saved.body, contains('cid=137649200'));
+    expect(saved.body, contains('ms=72345'));
+    final preview = find.descendant(
+      of: find.byType(SelectableText),
+      matching: find.byType(EditableText),
+    );
+    final firstRenderer = tester
+        .state<EditableTextState>(preview)
+        .renderEditable;
+    final firstBox = firstRenderer
+        .getBoxesForSelection(
+          const TextSelection(baseOffset: 0, extentOffset: 5),
+        )
+        .first;
+    await tester.tapAt(firstRenderer.localToGlobal(firstBox.toRect().center));
+    await tester.pumpAndSettle();
+    expect(service.openedCid, 137649199);
+    expect(service._position, const Duration(milliseconds: 12345));
+    final secondRenderer = tester
+        .state<EditableTextState>(preview)
+        .renderEditable;
+    final secondBox = secondRenderer
+        .getBoxesForSelection(
+          const TextSelection(baseOffset: 5, extentOffset: 10),
+        )
+        .first;
+    await tester.tapAt(secondRenderer.localToGlobal(secondBox.toRect().center));
+    await tester.pumpAndSettle();
+    expect(service.openedCid, 137649200);
+    expect(service._position, const Duration(milliseconds: 72345));
+    expect((await notes.loadNotes()).single.id, saved.id);
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
@@ -3567,25 +3642,7 @@ void main() {
     );
     expect(openedPanelSlide.offset, Offset.zero);
     expect(openedPanelSlide.duration, const Duration(milliseconds: 280));
-    final double compactHeaderTop = tester
-        .getTopLeft(find.byKey(const Key('compact-note-header')))
-        .dy;
-    final double panelTop = tester
-        .getTopLeft(find.byKey(const Key('fullscreen-video-notes-material')))
-        .dy;
-    expect(compactHeaderTop - panelTop, lessThan(14));
-    final TextField fullscreenTitleField = tester.widget<TextField>(
-      find.byKey(const Key('note-title-field')),
-    );
-    expect(fullscreenTitleField.decoration?.border, InputBorder.none);
-    expect(fullscreenTitleField.decoration?.filled, isFalse);
-    expect(fullscreenTitleField.style?.fontWeight, FontWeight.w900);
-    final TextField fullscreenBodyField = tester.widget<TextField>(
-      find.byKey(const Key('note-body-field')),
-    );
-    expect(fullscreenBodyField.decoration?.border, InputBorder.none);
-    expect(fullscreenBodyField.decoration?.filled, isFalse);
-
+    expect(find.byKey(const Key('markdown-note-body')), findsOneWidget);
     tester
         .widget<IconButton>(
           find.byKey(const Key('collapse-fullscreen-note-list')),
@@ -3611,9 +3668,10 @@ void main() {
     noteEntry.onTap!();
     await tester.pump();
     expect(playbackService.seekToRequests, 0);
-    expect(find.text('视频位置：00:42'), findsOneWidget);
-    await tester.tap(find.byKey(const Key('jump-to-video-note-position')));
-    await tester.pump();
+    await tester.pumpAndSettle();
+    expect(find.text('全屏笔记正文', findRichText: true), findsOneWidget);
+    await tester.tap(find.text('视频来源'));
+    await tester.pumpAndSettle();
     expect(playbackService.seekToRequests, 1);
 
     await tester.binding.handlePopRoute();
@@ -3622,6 +3680,7 @@ void main() {
       find.byKey(const Key('fullscreen-video-notes-panel')),
       findsOneWidget,
     );
+    await tester.pump();
     final AnimatedSlide closingPanelSlide = tester.widget<AnimatedSlide>(
       find.byKey(const Key('fullscreen-video-notes-slide')),
     );

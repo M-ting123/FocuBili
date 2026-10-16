@@ -147,7 +147,7 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    expect(find.text('时间点笔记'), findsOneWidget);
+    expect(find.text('学习笔记'), findsOneWidget);
     expect(find.text('原笔记标题'), findsOneWidget);
     expect(find.text('01:02'), findsOneWidget);
     expect(find.text('2026-07-15 19:01'), findsOneWidget);
@@ -168,12 +168,16 @@ void main() {
     expect(find.byType(VideoNoteDetailPage), findsOneWidget);
     expect(find.text('笔记详情'), findsOneWidget);
 
+    expect(find.byKey(const Key('markdown-note-body')), findsNothing);
+    await tester.tap(find.byKey(const Key('save-note-detail')));
+    await tester.pumpAndSettle();
+
     await tester.enterText(
       find.byKey(const Key('note-detail-title-field')),
       '修改后的笔记',
     );
     await tester.enterText(
-      find.byKey(const Key('note-detail-body-field')),
+      find.byKey(const Key('markdown-note-body')),
       '修改后的正文',
     );
     await tester.tap(find.byKey(const Key('save-note-detail')));
@@ -193,7 +197,7 @@ void main() {
     await tester.tap(find.widgetWithText(FilledButton, '删除'));
     await tester.pumpAndSettle();
 
-    expect(find.text('还没有时间点笔记'), findsOneWidget);
+    expect(find.text('还没有学习笔记'), findsOneWidget);
     expect(await service.loadNotes(), isEmpty);
   });
 
@@ -403,7 +407,7 @@ void main() {
   });
 
   /// 验证视频来源卡会传递正确分P和时间点，未保存退出时必须确认。
-  testWidgets('详情来源可跳转对应分P时间点且退出前提醒保存', (WidgetTester tester) async {
+  testWidgets('详情来源可跳转对应分P时间点且退出前自动保存', (WidgetTester tester) async {
     final VideoNoteService service = await _createPageNoteService();
     final _FakeNoteVideoService videoService = _FakeNoteVideoService();
     int? openedCid;
@@ -445,6 +449,8 @@ void main() {
 
     await tester.binding.handlePopRoute();
     await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('save-note-detail')));
+    await tester.pumpAndSettle();
     await tester.enterText(
       find.byKey(const Key('note-detail-title-field')),
       '尚未保存的标题',
@@ -452,15 +458,8 @@ void main() {
     await tester.pump();
     await tester.pageBack();
     await tester.pumpAndSettle();
-    expect(find.text('有未保存的修改'), findsOneWidget);
-    await tester.tap(find.text('继续编辑'));
-    await tester.pumpAndSettle();
-    expect(find.text('笔记详情'), findsOneWidget);
-
-    await tester.pageBack();
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('不保存并退出'));
-    await tester.pumpAndSettle();
+    expect(find.text('有未保存的修改'), findsNothing);
+    expect((await service.loadNotes()).single.title, '尚未保存的标题');
     expect(find.byKey(const Key('open-test-note-detail')), findsOneWidget);
   });
 

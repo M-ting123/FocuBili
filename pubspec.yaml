@@ -34,6 +34,7 @@ dependencies:
     path: packages/focubili_apple
   # 以下版本已在 Flutter 3.44.6 下完成解析、测试和 Android 构建验证。
   flutter_markdown_plus: ^1.0.12
+  markdown: ^7.3.1
   archive: ^4.0.9
   cached_network_image: ^3.4.1
   crypto: ^3.0.7

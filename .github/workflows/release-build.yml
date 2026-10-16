@@ -10,6 +10,11 @@ on:
       - .github/workflows/release-build.yml
       - windows/installer/build_windows_packages.ps1
   workflow_dispatch:
+    inputs:
+      windows_only:
+        description: Build only Windows packages without Android signing
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -25,6 +30,7 @@ env:
 jobs:
   android:
     name: Android release
+    if: ${{ github.event_name != 'workflow_dispatch' || !inputs.windows_only }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
 

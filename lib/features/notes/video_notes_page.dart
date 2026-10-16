@@ -572,7 +572,7 @@ class _VideoNotesPageState extends State<VideoNotesPage> {
               size: 54,
             ),
             const SizedBox(height: 12),
-            Text(searchEmpty ? '没有匹配的笔记' : '还没有时间点笔记'),
+            Text(searchEmpty ? '没有匹配的笔记' : '还没有学习笔记'),
             const SizedBox(height: 6),
             Text(
               searchEmpty ? '换个标题、视频名、UP 主或正文关键词试试。' : '在视频页点“记笔记”即可保存此刻的想法。',
@@ -703,7 +703,7 @@ class _VideoNotesPageState extends State<VideoNotesPage> {
               )
             : null,
         title: Text(
-          _selectionMode ? '已选择 ${_selectedNoteIds.length} 条' : '时间点笔记',
+          _selectionMode ? '已选择 ${_selectedNoteIds.length} 条' : '学习笔记',
         ),
         actions: <Widget>[
           if (_selectionMode) ...<Widget>[
