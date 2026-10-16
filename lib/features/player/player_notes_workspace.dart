@@ -19,6 +19,7 @@ mixin _PlayerNotesWorkspace on State<PlayerPage> {
   int _notePartCid = 0;
   bool _notesOpen = false;
   bool _noteEditing = true;
+  bool _noteCapturing = false;
   Map<String, String> _noteAttachments = {};
   bool _notesOverlayMounted = false;
   bool _notesLoading = false;
@@ -157,12 +158,17 @@ mixin _PlayerNotesWorkspace on State<PlayerPage> {
   /// 清空编辑器并把当前真实播放位置作为下一条笔记的时间点。
   /// Persist all pending edits before changing the document or closing its panel.
   Future<bool> _saveCurrentNoteBeforeTransition() async {
+    if (_noteCapturing) {
+      _showTransientSnackBar('请等待截图完成。');
+      return false;
+    }
     _noteAutoSaveTimer?.cancel();
     _noteAutoSaveTimer = null;
     await _noteSaveCompletion?.future;
     if (!mounted) return false;
-    if (_noteTitleController.text.isEmpty && _noteBodyController.text.isEmpty)
+    if (_noteTitleController.text.isEmpty && _noteBodyController.text.isEmpty) {
       return true;
+    }
     await _saveVideoNote(automatic: true);
     if (!mounted) return false;
     if (!_noteLastSaveSucceeded) {
@@ -378,7 +384,10 @@ mixin _PlayerNotesWorkspace on State<PlayerPage> {
     }
     final String enteredTitle = _noteTitleController.text.trim();
     final String body = _noteBodyController.text;
-    final attachments = Map<String, String>.of(_noteAttachments);
+    final attachments = <String, String>{
+      for (final entry in _noteAttachments.entries)
+        if (body.contains('](${entry.key})')) entry.key: entry.value,
+    };
     if (enteredTitle.isEmpty && !automatic) {
       _showTransientSnackBar('请先填写笔记标题。');
       return;
@@ -454,6 +463,8 @@ mixin _PlayerNotesWorkspace on State<PlayerPage> {
         if (draftRevision == _noteDraftRevision) {
           _editingVideoNote = note;
           _noteFramePath = note.framePath;
+          if (_noteBodyController.text == body)
+            _noteAttachments = Map.of(attachments);
         }
         _noteSaving = false;
         _noteAutoSaving = false;
@@ -561,6 +572,75 @@ mixin _PlayerNotesWorkspace on State<PlayerPage> {
     }
   }
 
+  /// Insert the actual current playback position; never reuse the note creation time.
+  void _insertNoteTimestamp() {
+    final target = NoteVideoLink(
+      _activeVideo.bvid,
+      _currentPart.cid,
+      _currentPart.pageNumber,
+      _playbackSnapshot.position,
+    );
+    MarkdownNoteEditor.insert(
+      _noteBodyController,
+      '[${formatVideoNotePosition(target.position)}](${target.uri})',
+    );
+    _handleVideoNoteDraftChanged(_noteBodyController.text);
+  }
+
+  /// Capture the currently displayed frame as an independent document attachment.
+  Future<void> _insertNoteScreenshot() async {
+    if (_noteCapturing) return;
+    setState(() => _noteCapturing = true);
+    final revision = _noteDraftRevision;
+    try {
+      final path = await _playbackService.captureCurrentFrame();
+      if (path == null) throw StateError('截图失败');
+      if (!mounted || revision != _noteDraftRevision) return;
+      final key = 'images/frame-${DateTime.now().microsecondsSinceEpoch}.png';
+      setState(() => _noteAttachments[key] = path);
+      MarkdownNoteEditor.insert(_noteBodyController, '\n\n![视频截图]($key)\n\n');
+      _handleVideoNoteDraftChanged(_noteBodyController.text);
+    } catch (_) {
+      if (mounted) _showTransientSnackBar('截取当前画面失败，请重试。');
+    } finally {
+      if (mounted) setState(() => _noteCapturing = false);
+    }
+  }
+
+  Future<void> _switchActiveVideo(
+    VideoPreview video, {
+    LearningListEntry? learningEntry,
+  });
+
+  /// Reuse the player, wait for the target part to open, then seek to the timestamp.
+  Future<void> _openNoteMarkdownLink(String value) async {
+    final target = NoteVideoLink.parse(value);
+    if (target == null) {
+      final uri = Uri.tryParse(value);
+      if (uri != null && (uri.scheme == 'http' || uri.scheme == 'https')) {
+        await launchExternalLink(uri);
+      }
+      return;
+    }
+    try {
+      if (!await _saveCurrentNoteBeforeTransition()) return;
+      if (target.bvid != _activeVideo.bvid) {
+        final service = widget.bilibiliService ?? BilibiliVideoInfoService();
+        final video = await service.lookupVideo(target.bvid);
+        if (!mounted) return;
+        await _switchActiveVideo(video, learningEntry: null);
+      }
+      if (!mounted || target.bvid != _activeVideo.bvid) return;
+      final parts = _activeVideo.parts.where((part) => part.cid == target.cid);
+      if (parts.isEmpty) throw StateError('视频分 P 不存在');
+      if (_currentPart.cid != target.cid) await _changePart(parts.first);
+      if (mounted && _currentPart.cid == target.cid)
+        await _seekNativeTo(target.position);
+    } catch (_) {
+      if (mounted) _showTransientSnackBar('无法跳转到这个时间戳，请重试。');
+    }
+  }
+
   /// 创建播放器笔记编辑器，并把保存、删除、画面选择等操作连接到本机服务。
   Widget _buildVideoNoteComposer({required bool compact}) {
     return Column(
@@ -619,6 +699,10 @@ mixin _PlayerNotesWorkspace on State<PlayerPage> {
           editing: _noteEditing,
           attachments: _noteAttachments,
           onChanged: _handleVideoNoteDraftChanged,
+          onTimestamp: _insertNoteTimestamp,
+          onScreenshot: () => unawaited(_insertNoteScreenshot()),
+          capturing: _noteCapturing,
+          onLink: (value) => unawaited(_openNoteMarkdownLink(value)),
         ),
       ],
     );
