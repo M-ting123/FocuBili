@@ -659,7 +659,7 @@ mixin _PlayerNotesWorkspace on State<PlayerPage> {
       _currentPart.pageNumber,
       _playbackSnapshot.position,
     );
-    MarkdownNoteEditor.insert(
+    VisualNoteEditor.insert(
       _noteBodyController,
       '[${formatVideoNotePosition(target.position)}](${target.uri})',
     );
@@ -677,7 +677,7 @@ mixin _PlayerNotesWorkspace on State<PlayerPage> {
       if (!mounted || revision != _noteDraftRevision) return;
       final key = 'images/frame-${DateTime.now().microsecondsSinceEpoch}.png';
       setState(() => _noteAttachments[key] = path);
-      MarkdownNoteEditor.insert(_noteBodyController, '\n\n![视频截图]($key)\n\n');
+      VisualNoteEditor.insert(_noteBodyController, '![视频截图]($key)');
       _handleVideoNoteDraftChanged(_noteBodyController.text);
     } catch (_) {
       if (mounted) _showTransientSnackBar('截取当前画面失败，请重试。');
@@ -789,7 +789,7 @@ mixin _PlayerNotesWorkspace on State<PlayerPage> {
           ),
         ),
         const SizedBox(height: 12),
-        MarkdownNoteEditor(
+        VisualNoteEditor(
           controller: _noteBodyController,
           editing: _noteEditing,
           attachments: _noteAttachments,

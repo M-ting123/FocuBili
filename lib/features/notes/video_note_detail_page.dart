@@ -3,7 +3,7 @@ import 'dart:async';
 import '../../models/note_video_link.dart';
 import '../../models/note_markdown.dart';
 import '../../services/external_link_service.dart';
-import 'markdown_note_editor.dart';
+import 'visual_note_editor.dart';
 import 'note_folder_picker.dart';
 import '../../services/app_favorites_service.dart';
 import '../../services/video_note_export_service.dart';
@@ -555,7 +555,7 @@ class _VideoNoteDetailPageState extends State<VideoNoteDetailPage> {
           ),
         ),
         const Divider(height: 28),
-        MarkdownNoteEditor(
+        VisualNoteEditor(
           controller: _bodyController,
           editing: _editing,
           attachments: _note.attachments,
