@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:focubili/features/notes/visual_note_editor.dart';
+import 'package:focubili/features/notes/video_note_frame_viewer_page.dart';
 
 const target = 'focubili://video?bvid=BV1GJ411x7h7&cid=100&page=1&ms=62000';
 const timestamp = '[01:02]($target)';
@@ -11,6 +12,8 @@ void main() {
   testWidgets(
     'editing and reading display actual images and clickable timestamps',
     (tester) async {
+      await tester.binding.setSurfaceSize(const Size(800, 1400));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
       final image = File('assets/icon/focubili_icon.png');
       await tester.pumpWidget(const MaterialApp(home: Scaffold()));
       await tester.runAsync(
@@ -41,6 +44,28 @@ void main() {
         await tester.pumpAndSettle();
         expect(find.byType(Image), findsOneWidget);
         expect(tester.widget<RawImage>(find.byType(RawImage)).image, isNotNull);
+        final body = controller.text;
+        await tester.tap(
+          find.byKey(const ValueKey('open-note-image-images/frame.png')),
+        );
+        await tester.pumpAndSettle();
+        expect(find.byType(VideoNoteFrameViewerPage), findsOneWidget);
+        expect(
+          tester
+              .widget<VideoNoteFrameViewerPage>(
+                find.byType(VideoNoteFrameViewerPage),
+              )
+              .framePath,
+          image.path,
+        );
+        expect(
+          find.byKey(const Key('reset-fullscreen-note-frame-zoom')),
+          findsOneWidget,
+        );
+        await tester.tap(find.byKey(const Key('close-fullscreen-note-frame')));
+        await tester.pumpAndSettle();
+        expect(find.byType(VideoNoteFrameViewerPage), findsNothing);
+        expect(controller.text, body);
         expect(find.text('截图文件不可用'), findsNothing);
         expect(find.widgetWithText(ActionChip, '01:02'), findsOneWidget);
         expect(find.textContaining('focubili://'), findsNothing);
