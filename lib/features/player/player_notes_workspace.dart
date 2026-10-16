@@ -18,6 +18,8 @@ mixin _PlayerNotesWorkspace on State<PlayerPage> {
   Duration _notePosition = Duration.zero;
   int _notePartCid = 0;
   bool _notesOpen = false;
+  bool _noteEditing = true;
+  Map<String, String> _noteAttachments = {};
   bool _notesOverlayMounted = false;
   bool _notesLoading = false;
   bool _noteSaving = false;
@@ -144,24 +146,56 @@ mixin _PlayerNotesWorkspace on State<PlayerPage> {
       });
     }
     if (selectedNote == null) {
-      _startNewVideoNote();
+      await _startNewVideoNote();
     } else {
-      _selectVideoNote(selectedNote);
+      await _selectVideoNote(selectedNote);
     }
     await _loadCurrentVideoNotes();
     _restartControlsAutoHideTimer();
   }
 
   /// 清空编辑器并把当前真实播放位置作为下一条笔记的时间点。
-  void _startNewVideoNote() {
+  /// Persist all pending edits before changing the document or closing its panel.
+  Future<bool> _saveCurrentNoteBeforeTransition() async {
+    _noteAutoSaveTimer?.cancel();
+    _noteAutoSaveTimer = null;
+    await _noteSaveCompletion?.future;
+    if (!mounted) return false;
+    if (_noteTitleController.text.isEmpty && _noteBodyController.text.isEmpty)
+      return true;
+    await _saveVideoNote(automatic: true);
+    if (!mounted) return false;
+    if (!_noteLastSaveSucceeded) {
+      _showTransientSnackBar('笔记尚未保存，请点击保存重试。');
+      return false;
+    }
+    // Typing can continue during the write; save the newer snapshot before leaving.
+    if (_editingVideoNote?.body != _noteBodyController.text ||
+        _editingVideoNote?.title != _noteTitleController.text.trim()) {
+      return _saveCurrentNoteBeforeTransition();
+    }
+    _noteAutoSaveTimer?.cancel();
+    _noteAutoSaveTimer = null;
+    return true;
+  }
+
+  Future<void> _previewCurrentNote() async {
+    if (await _saveCurrentNoteBeforeTransition() && mounted) {
+      setState(() => _noteEditing = false);
+    }
+  }
+
+  Future<void> _startNewVideoNote() async {
     if (!mounted) {
       return;
     }
-    _flushVideoNoteAutoSave();
+    if (!await _saveCurrentNoteBeforeTransition() || !mounted) return;
     setState(() {
       _noteDraftRevision += 1;
       _editingVideoNote = null;
-      _noteTitleController.clear();
+      _noteTitleController.text = '${_activeVideo.title}＋笔记';
+      _noteEditing = true;
+      _noteAttachments = {};
       _noteBodyController.clear();
       _notePosition = _playbackSnapshot.position;
       _notePartCid = _currentPart.cid;
@@ -171,11 +205,11 @@ mixin _PlayerNotesWorkspace on State<PlayerPage> {
   }
 
   /// 关闭播放器内笔记工作区；全屏时等待右滑动画完成后再移除面板。
-  void _closeVideoNotes() {
+  Future<void> _closeVideoNotes() async {
     if (!_notesOpen && !_notesOverlayMounted) {
       return;
     }
-    _flushVideoNoteAutoSave();
+    if (!await _saveCurrentNoteBeforeTransition() || !mounted) return;
     _notesPanelAnimationTimer?.cancel();
     setState(() {
       _notesOpen = false;
@@ -207,13 +241,16 @@ mixin _PlayerNotesWorkspace on State<PlayerPage> {
   }
 
   /// 选择已有笔记并填入编辑器；播放位置只会由显式跳转按钮改变。
-  void _selectVideoNote(VideoNote note) {
+  Future<void> _selectVideoNote(VideoNote note) async {
+    if (!await _saveCurrentNoteBeforeTransition() || !mounted) return;
     final VideoPart targetPart = _findVideoNotePart(note.partCid);
     _noteAutoSaveTimer?.cancel();
     _noteAutoSaveTimer = null;
     setState(() {
       _noteDraftRevision += 1;
       _editingVideoNote = note;
+      _noteEditing = false;
+      _noteAttachments = Map.of(note.attachments);
       _noteTitleController.text = note.title;
       _noteBodyController.text = note.body;
       _notePosition = note.position;
@@ -244,10 +281,6 @@ mixin _PlayerNotesWorkspace on State<PlayerPage> {
   }
 
   /// 更新“插入当前画面”选择，取消时只影响本次保存，不立即删除旧文件。
-  void _setIncludeCurrentFrame(bool selected) {
-    setState(() => _includeCurrentFrame = selected);
-    _scheduleVideoNoteAutoSave();
-  }
 
   /// 在标题或正文停止输入片刻后自动保存，避免频繁写入本机偏好设置。
   void _handleVideoNoteDraftChanged(String value) {
@@ -344,7 +377,8 @@ mixin _PlayerNotesWorkspace on State<PlayerPage> {
       }
     }
     final String enteredTitle = _noteTitleController.text.trim();
-    final String body = _noteBodyController.text.trim();
+    final String body = _noteBodyController.text;
+    final attachments = Map<String, String>.of(_noteAttachments);
     if (enteredTitle.isEmpty && !automatic) {
       _showTransientSnackBar('请先填写笔记标题。');
       return;
@@ -394,6 +428,7 @@ mixin _PlayerNotesWorkspace on State<PlayerPage> {
               partTitle: notePart.title,
               title: title,
               body: body,
+              attachments: attachments,
               createdAt: now,
               updatedAt: now,
               position: notePosition,
@@ -403,6 +438,7 @@ mixin _PlayerNotesWorkspace on State<PlayerPage> {
           : existing.copyWith(
               title: title,
               body: body,
+              attachments: attachments,
               updatedAt: now,
               position: notePosition,
               framePath: framePath,
@@ -507,6 +543,9 @@ mixin _PlayerNotesWorkspace on State<PlayerPage> {
         _noteDraftRevision += 1;
         _noteSaving = false;
         _notesLoading = true;
+        _editingVideoNote = null;
+        _noteTitleController.clear();
+        _noteBodyController.clear();
       });
       _startNewVideoNote();
       await _loadCurrentVideoNotes();
@@ -524,33 +563,64 @@ mixin _PlayerNotesWorkspace on State<PlayerPage> {
 
   /// 创建播放器笔记编辑器，并把保存、删除、画面选择等操作连接到本机服务。
   Widget _buildVideoNoteComposer({required bool compact}) {
-    return VideoNoteComposer(
-      titleController: _noteTitleController,
-      bodyController: _noteBodyController,
-      position: _notePosition,
-      partPageNumber: _findVideoNotePart(_notePartCid).pageNumber,
-      createdAt: _editingVideoNote?.createdAt,
-      includeFrame: _includeCurrentFrame,
-      framePath: _noteFramePath,
-      saving: _noteSaving || _noteAutoSaving,
-      inputEnabled: !_noteSaving,
-      onIncludeFrameChanged: _setIncludeCurrentFrame,
-      // 保存函数自动写入记录时间、视频时间点和用户选择的当前画面。
-      onSave: () => unawaited(_saveVideoNote()),
-      // 标题和正文变化函数安排去抖自动保存，避免每次按键都立即写本机存储。
-      onTitleChanged: _handleVideoNoteDraftChanged,
-      onBodyChanged: _handleVideoNoteDraftChanged,
-      onNew: _startNewVideoNote,
-      onClose: _closeVideoNotes,
-      // 跳转函数只在用户点击独立按钮后才改变视频分P和时间点。
-      onJumpToPosition: _editingVideoNote == null
-          ? null
-          : () => unawaited(_jumpToSelectedVideoNotePosition()),
-      onDelete: _editingVideoNote == null
-          ? null
-          : () => unawaited(_deleteEditingVideoNote()),
-      compact: compact,
-      borderless: true,
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Wrap(
+          crossAxisAlignment: WrapCrossAlignment.center,
+          children: [
+            if (_editingVideoNote != null)
+              TextButton(
+                onPressed: () => unawaited(_jumpToSelectedVideoNotePosition()),
+                child: const Text('视频来源'),
+              ),
+            TextButton.icon(
+              onPressed: () => unawaited(_startNewVideoNote()),
+              icon: const Icon(Icons.note_add_outlined),
+              label: const Text('新建笔记'),
+            ),
+            TextButton(
+              onPressed: () {
+                if (_noteEditing) {
+                  unawaited(_previewCurrentNote());
+                } else {
+                  setState(() => _noteEditing = true);
+                }
+              },
+              child: Text(_noteEditing ? '完成编辑' : '编辑'),
+            ),
+            TextButton(
+              onPressed: () => unawaited(_saveVideoNote()),
+              child: const Text('保存'),
+            ),
+            IconButton(
+              onPressed: () => unawaited(_closeVideoNotes()),
+              icon: const Icon(Icons.close),
+              tooltip: '关闭笔记',
+            ),
+            if (_editingVideoNote != null)
+              IconButton(
+                onPressed: () => unawaited(_deleteEditingVideoNote()),
+                icon: const Icon(Icons.delete_outline),
+                tooltip: '删除笔记',
+              ),
+          ],
+        ),
+        TextField(
+          key: const Key('note-title-field'),
+          controller: _noteTitleController,
+          readOnly: !_noteEditing,
+          onChanged: _handleVideoNoteDraftChanged,
+          decoration: const InputDecoration(labelText: '笔记名称'),
+        ),
+        const SizedBox(height: 12),
+        MarkdownNoteEditor(
+          controller: _noteBodyController,
+          editing: _noteEditing,
+          attachments: _noteAttachments,
+          onChanged: _handleVideoNoteDraftChanged,
+        ),
+      ],
     );
   }
 

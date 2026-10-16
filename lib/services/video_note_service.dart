@@ -31,8 +31,9 @@ class VideoNoteService {
   Future<void> _backup(SharedPreferences prefs) async {
     final raw = prefs.getString(storageKey);
     if (raw != null && prefs.getString(legacyBackupKey) == null) {
-      if (!await prefs.setString(legacyBackupKey, raw))
+      if (!await prefs.setString(legacyBackupKey, raw)) {
         throw StateError('原始笔记备份失败');
+      }
     }
   }
 

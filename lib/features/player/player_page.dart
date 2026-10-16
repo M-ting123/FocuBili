@@ -21,6 +21,7 @@ import '../../features/focus/player_focus_onboarding.dart';
 import '../../features/notes/video_note_composer.dart';
 import '../../features/profile/user_profile_page.dart';
 import '../../models/video_note.dart';
+import '../../features/notes/markdown_note_editor.dart';
 import '../../platform/app_platform.dart';
 import '../../models/video_preview.dart';
 import '../../models/app_favorite.dart';
