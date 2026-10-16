@@ -144,8 +144,9 @@ class VideoNote {
         parsedUpdatedAt == null) {
       return null;
     }
-    if (json.containsKey('formatVersion') && json['formatVersion'] is! int)
+    if (json.containsKey('formatVersion') && json['formatVersion'] is! int) {
       return null;
+    }
     final version = json['formatVersion'] is int
         ? json['formatVersion'] as int
         : 1;

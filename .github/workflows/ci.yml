@@ -11,6 +11,15 @@ on:
       - dev
       - master
   workflow_dispatch:
+    inputs:
+      windows_only:
+        description: Skip Android when building a Windows preview
+        type: boolean
+        default: false
+      windows_release:
+        description: Build a Windows release portable package
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -52,6 +61,7 @@ jobs:
 
   android:
     name: Android debug
+    if: ${{ github.event_name != 'workflow_dispatch' || !inputs.windows_only }}
     needs: quality
     runs-on: ubuntu-latest
     timeout-minutes: 35
@@ -112,10 +122,25 @@ jobs:
       - name: Install dependencies
         run: flutter pub get
 
-      - name: Build Windows debug application
-        run: flutter build windows --debug --no-pub
+      - name: Build Windows application
+        run: flutter build windows --${{ inputs.windows_release && 'release' || 'debug' }} --no-pub
+
+      - name: Package Windows release preview
+        if: ${{ inputs.windows_release }}
+        shell: pwsh
+        run: .\windows\installer\build_windows_packages.ps1
+
+      - name: Upload Windows release preview
+        if: ${{ inputs.windows_release }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: focubili-markdown-notes-windows
+          path: build/windows/x64/installer/*-portable.zip
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Upload Windows debug build
+        if: ${{ !inputs.windows_release }}
         uses: actions/upload-artifact@v4
         with:
           name: focubili-debug-windows
