@@ -15,7 +15,27 @@ class VideoNoteService {
     : _preferencesLoader = preferencesLoader ?? SharedPreferences.getInstance;
 
   static const String storageKey = 'video_timepoint_notes_v1';
+  // Kept for source compatibility; documents are never truncated.
   static const int maximumEntries = 500;
+  static const String legacyBackupKey = 'video_timepoint_notes_original_backup';
+  static Future<void> _queue = Future<void>.value();
+
+  /// Serialize mutations across instances to prevent lost autosaves.
+  Future<T> _mutate<T>(Future<T> Function() operation) {
+    final next = _queue.then((_) => operation());
+    _queue = next.then<void>((_) {}, onError: (Object e, StackTrace s) {});
+    return next;
+  }
+
+  /// Preserve the original JSON before any rewrite.
+  Future<void> _backup(SharedPreferences prefs) async {
+    final raw = prefs.getString(storageKey);
+    if (raw != null && prefs.getString(legacyBackupKey) == null) {
+      if (!await prefs.setString(legacyBackupKey, raw))
+        throw StateError('原始笔记备份失败');
+    }
+  }
+
   static final StreamController<String> _changes =
       StreamController<String>.broadcast();
 
@@ -57,7 +77,7 @@ class VideoNoteService {
   }
 
   /// 新增或覆盖同编号笔记，并在更换画面时删除不再引用的旧文件。
-  Future<void> saveNote(VideoNote note) async {
+  Future<void> saveNote(VideoNote note) => _mutate(() async {
     final VideoNote? normalized = VideoNote.tryParse(note.toJson());
     if (normalized == null) {
       throw ArgumentError.value(note, 'note', '笔记缺少必要信息。');
@@ -66,12 +86,15 @@ class VideoNoteService {
     final List<VideoNote> notes = _decodeNotes(
       preferences.getString(storageKey),
     );
+    await _backup(preferences);
     final int existingIndex = notes.indexWhere(
       (VideoNote item) => item.id == normalized.id,
     );
+    final obsoletePaths = <String>[];
     String? obsoleteFramePath;
     if (existingIndex >= 0) {
       final VideoNote previous = notes[existingIndex];
+      obsoletePaths.addAll(previous.attachments.values);
       if (previous.framePath != normalized.framePath) {
         obsoleteFramePath = previous.framePath;
       }
@@ -84,14 +107,7 @@ class VideoNoteService {
       (VideoNote left, VideoNote right) =>
           right.updatedAt.compareTo(left.updatedAt),
     );
-    final List<VideoNote> limited = notes.take(maximumEntries).toList();
-    final Set<String> retainedIds = limited
-        .map((VideoNote item) => item.id)
-        .toSet();
-    final List<String?> removedFrames = notes
-        .where((VideoNote item) => !retainedIds.contains(item.id))
-        .map((VideoNote item) => item.framePath)
-        .toList(growable: false);
+    final List<VideoNote> limited = notes;
     final saved = await preferences.setString(
       storageKey,
       jsonEncode(
@@ -100,14 +116,21 @@ class VideoNoteService {
     );
     if (!saved) throw StateError('笔记保存失败');
     _changes.add(normalized.bvid);
-    await _deleteFrameIfPresent(obsoleteFramePath);
-    for (final String? framePath in removedFrames) {
-      await _deleteFrameIfPresent(framePath);
+    final retainedPaths = notes
+        .expand(
+          (n) => [
+            ...n.attachments.values,
+            if (n.framePath != null) n.framePath!,
+          ],
+        )
+        .toSet();
+    for (final path in [...obsoletePaths, ?obsoleteFramePath]) {
+      if (!retainedPaths.contains(path)) await _deleteFrameIfPresent(path);
     }
-  }
+  });
 
   /// 删除指定编号的笔记，并同步清理该笔记独占的视频画面文件。
-  Future<void> deleteNote(String id) async {
+  Future<void> deleteNote(String id) => _mutate(() async {
     final String normalizedId = id.trim();
     if (normalizedId.isEmpty) {
       return;
@@ -120,6 +143,7 @@ class VideoNoteService {
       (VideoNote? item) => item?.id == normalizedId,
       orElse: () => null,
     );
+    await _backup(preferences);
     notes.removeWhere((VideoNote item) => item.id == normalizedId);
     final saved = await preferences.setString(
       storageKey,
@@ -129,8 +153,21 @@ class VideoNoteService {
     );
     if (!saved) throw StateError('笔记删除失败');
     if (removed != null) _changes.add(removed.bvid);
-    await _deleteFrameIfPresent(removed?.framePath);
-  }
+    final retainedPaths = notes
+        .expand(
+          (n) => [
+            ...n.attachments.values,
+            if (n.framePath != null) n.framePath!,
+          ],
+        )
+        .toSet();
+    for (final path in [
+      ...?removed?.attachments.values,
+      if (removed?.framePath != null) removed!.framePath!,
+    ]) {
+      if (!retainedPaths.contains(path)) await _deleteFrameIfPresent(path);
+    }
+  });
 
   /// 将本机 JSON 解码为去重后的笔记列表，损坏数据会被安全忽略。
   List<VideoNote> _decodeNotes(String? rawJson) {
@@ -139,25 +176,22 @@ class VideoNoteService {
     }
     try {
       final Object? decoded = jsonDecode(rawJson);
-      if (decoded is! List<Object?>) {
-        return <VideoNote>[];
-      }
+      if (decoded is! List<Object?>) throw const FormatException('笔记数据损坏');
       final Set<String> seenIds = <String>{};
       final List<VideoNote> notes = <VideoNote>[];
       for (final Object? item in decoded) {
-        if (item is! Map) {
-          continue;
-        }
+        if (item is! Map) throw const FormatException('笔记数据损坏');
         final VideoNote? note = VideoNote.tryParse(
           Map<String, dynamic>.from(item),
         );
-        if (note != null && seenIds.add(note.id)) {
+        if (note == null) throw const FormatException('笔记数据损坏');
+        if (seenIds.add(note.id)) {
           notes.add(note);
         }
       }
       return notes;
     } catch (_) {
-      return <VideoNote>[];
+      throw const FormatException('笔记数据损坏，原始数据已保留');
     }
   }
 

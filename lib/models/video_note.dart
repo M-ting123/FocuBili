@@ -16,6 +16,9 @@ class VideoNote {
     required this.position,
     this.videoCoverUrl = '',
     this.framePath,
+    this.formatVersion = 2,
+    this.attachments = const <String, String>{},
+    this.folderId = 'learning-notes',
   });
 
   final String id;
@@ -32,6 +35,9 @@ class VideoNote {
   final Duration position;
   final String videoCoverUrl;
   final String? framePath;
+  final int formatVersion;
+  final Map<String, String> attachments;
+  final String folderId;
 
   /// 复制笔记并替换用户编辑过的字段，更新时间由调用方明确写入。
   VideoNote copyWith({
@@ -42,8 +48,14 @@ class VideoNote {
     String? videoCoverUrl,
     String? framePath,
     bool clearFrame = false,
+    int? formatVersion,
+    Map<String, String>? attachments,
+    String? folderId,
   }) {
     return VideoNote(
+      formatVersion: formatVersion ?? this.formatVersion,
+      attachments: Map.unmodifiable(attachments ?? this.attachments),
+      folderId: folderId ?? this.folderId,
       id: id,
       bvid: bvid,
       videoTitle: videoTitle,
@@ -64,6 +76,9 @@ class VideoNote {
   /// 将笔记转换为 SharedPreferences 可保存的 JSON 字典。
   Map<String, Object?> toJson() {
     return <String, Object?>{
+      'formatVersion': formatVersion,
+      'attachments': attachments,
+      'folderId': folderId,
       'id': id,
       'bvid': bvid,
       'videoTitle': videoTitle,
@@ -129,7 +144,50 @@ class VideoNote {
         parsedUpdatedAt == null) {
       return null;
     }
+    final version = json['formatVersion'] is int
+        ? json['formatVersion'] as int
+        : 1;
+    final attachments = <String, String>{};
+    if (json['attachments'] is Map) {
+      for (final entry in (json['attachments'] as Map).entries) {
+        if (entry.key is String && entry.value is String) {
+          attachments[entry.key as String] = entry.value as String;
+        }
+      }
+    }
+    var markdown = body;
+    if (version < 2) {
+      markdown = body
+          .replaceAllMapped(
+            RegExp(r'([\\`*_{}\[\]<>#~|])'),
+            (match) => '\\${match.group(0)}',
+          )
+          .replaceAll('\n', '  \n');
+      final target = Uri(
+        scheme: 'focubili',
+        host: 'video',
+        queryParameters: {
+          'bvid': normalizedBvid,
+          'cid': '$normalizedPartCid',
+          'page': '$normalizedPartPageNumber',
+          'ms': '${positionMs.toInt()}',
+        },
+      );
+      final seconds = positionMs.toInt() ~/ 1000;
+      final label =
+          '${seconds ~/ 60}:${(seconds % 60).toString().padLeft(2, '0')}';
+      markdown = '[视频时间 $label]($target)\n\n$markdown';
+      if (framePath is String && framePath.isNotEmpty) {
+        attachments['images/legacy.png'] = framePath;
+        markdown += '\n\n![视频截图](images/legacy.png)';
+      }
+    }
     return VideoNote(
+      formatVersion: 2,
+      attachments: Map.unmodifiable(attachments),
+      folderId: json['folderId'] is String
+          ? json['folderId'] as String
+          : 'learning-notes',
       id: normalizedId,
       bvid: normalizedBvid,
       videoTitle: normalizedVideoTitle,
@@ -138,7 +196,7 @@ class VideoNote {
       partPageNumber: normalizedPartPageNumber,
       partTitle: partTitle.trim(),
       title: normalizedTitle,
-      body: body.trim(),
+      body: markdown,
       createdAt: parsedCreatedAt.toLocal(),
       updatedAt: parsedUpdatedAt.toLocal(),
       position: Duration(milliseconds: positionMs.toInt().clamp(0, 604800000)),

@@ -1,4 +1,8 @@
 import 'dart:io';
+import 'dart:async';
+import '../../models/note_video_link.dart';
+import '../../services/external_link_service.dart';
+import 'markdown_note_editor.dart';
 
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
@@ -52,6 +56,9 @@ class _VideoNoteDetailPageState extends State<VideoNoteDetailPage> {
   late final BilibiliService _videoService;
   late VideoNote _note;
   bool _saving = false;
+  bool _editing = false;
+  Timer? _autoSave;
+  Future<void>? _saveTask;
   bool _openingVideo = false;
   bool _allowPop = false;
 
@@ -70,6 +77,7 @@ class _VideoNoteDetailPageState extends State<VideoNoteDetailPage> {
   /// 页面销毁时释放两个输入控制器，避免它们继续占用系统输入资源。
   @override
   void dispose() {
+    _autoSave?.cancel();
     _titleController.removeListener(_handleDraftChanged);
     _bodyController.removeListener(_handleDraftChanged);
     _titleController.dispose();
@@ -80,18 +88,44 @@ class _VideoNoteDetailPageState extends State<VideoNoteDetailPage> {
   /// 判断当前输入是否与最后一次保存内容不同，用于拦截误退出。
   bool get _hasUnsavedChanges {
     return _titleController.text.trim() != _note.title ||
-        _bodyController.text.trim() != _note.body;
+        _bodyController.text != _note.body;
   }
 
   /// 输入变化时刷新 PopScope，让返回按钮立即知道是否需要提醒保存。
   void _handleDraftChanged() {
     if (mounted) {
       setState(() {});
+      _autoSave?.cancel();
+      if (_hasUnsavedChanges) {
+        _autoSave = Timer(
+          const Duration(milliseconds: 800),
+          () => unawaited(_saveNote(automatic: true)),
+        );
+      }
     }
   }
 
   /// 校验标题并把详情页中的修改保存回本机笔记服务。
-  Future<void> _saveNote() async {
+  Future<void> _saveNote({bool automatic = false}) async {
+    _autoSave?.cancel();
+    if (_saveTask != null) await _saveTask;
+    if (!_hasUnsavedChanges) return;
+    final completer = Completer<void>();
+    _saveTask = completer.future;
+    try {
+      await _persistNote(automatic: automatic);
+    } finally {
+      completer.complete();
+      _saveTask = null;
+    }
+  }
+
+  Future<void> _finishEditing() async {
+    await _saveNote();
+    if (mounted && !_hasUnsavedChanges) setState(() => _editing = false);
+  }
+
+  Future<void> _persistNote({bool automatic = false}) async {
     final String title = _titleController.text.trim();
     if (title.isEmpty) {
       ScaffoldMessenger.of(context)
@@ -103,7 +137,7 @@ class _VideoNoteDetailPageState extends State<VideoNoteDetailPage> {
     try {
       final VideoNote updated = _note.copyWith(
         title: title,
-        body: _bodyController.text.trim(),
+        body: _bodyController.text,
         updatedAt: DateTime.now(),
       );
       await widget.noteService.saveNote(updated);
@@ -114,9 +148,11 @@ class _VideoNoteDetailPageState extends State<VideoNoteDetailPage> {
         _note = updated;
         _saving = false;
       });
-      ScaffoldMessenger.of(context)
-        ..hideCurrentSnackBar()
-        ..showSnackBar(const SnackBar(content: Text('笔记已保存。')));
+      if (!automatic) {
+        ScaffoldMessenger.of(context)
+          ..hideCurrentSnackBar()
+          ..showSnackBar(const SnackBar(content: Text('笔记已保存。')));
+      }
     } catch (_) {
       if (!mounted) {
         return;
@@ -161,6 +197,8 @@ class _VideoNoteDetailPageState extends State<VideoNoteDetailPage> {
 
   /// 在存在未保存修改时询问用户，确认后才允许离开详情页。
   Future<bool> _confirmDiscardChanges() async {
+    await _saveNote();
+    if (!mounted) return false;
     if (!_hasUnsavedChanges) {
       return true;
     }
@@ -215,24 +253,44 @@ class _VideoNoteDetailPageState extends State<VideoNoteDetailPage> {
   }
 
   /// 查询笔记视频的最新分P信息，并打开对应分P和记录时间点。
-  Future<void> _openSourceVideo() async {
+  void _openMarkdownLink(String value) {
+    final target = NoteVideoLink.parse(value);
+    if (target != null) {
+      unawaited(_openSourceVideo(target: target));
+    } else if (Uri.tryParse(value)?.scheme == 'https' ||
+        Uri.tryParse(value)?.scheme == 'http') {
+      unawaited(launchExternalLink(Uri.parse(value)));
+    }
+  }
+
+  Future<void> _openSourceVideo({NoteVideoLink? target}) async {
     if (_openingVideo) {
       return;
     }
     setState(() => _openingVideo = true);
     try {
-      final VideoPreview video = await _videoService.lookupVideo(_note.bvid);
-      final VideoPart part = _findNotePart(video);
+      final VideoPreview video = await _videoService.lookupVideo(
+        target?.bvid ?? _note.bvid,
+      );
+      final matches = video.parts.where((p) => p.cid == target?.cid);
+      if (target != null && matches.isEmpty) throw StateError('视频分 P 不存在');
+      final VideoPart part = target == null
+          ? _findNotePart(video)
+          : matches.first;
       if (!mounted) {
         return;
       }
       final Widget destination =
-          widget.playerBuilder?.call(video, part.cid, _note.position) ??
+          widget.playerBuilder?.call(
+            video,
+            part.cid,
+            target?.position ?? _note.position,
+          ) ??
           PlayerPage(
             video: video,
             bilibiliService: _videoService,
             initialPartCid: part.cid,
-            initialPosition: _note.position,
+            initialPosition: target?.position ?? _note.position,
           );
       setState(() => _openingVideo = false);
       await Navigator.of(context).push<void>(
@@ -465,7 +523,7 @@ class _VideoNoteDetailPageState extends State<VideoNoteDetailPage> {
         TextField(
           key: const Key('note-detail-title-field'),
           controller: _titleController,
-          enabled: !_saving,
+          enabled: _editing && !_saving,
           maxLength: 80,
           minLines: 1,
           maxLines: 3,
@@ -484,24 +542,13 @@ class _VideoNoteDetailPageState extends State<VideoNoteDetailPage> {
           ),
         ),
         const Divider(height: 28),
-        TextField(
-          key: const Key('note-detail-body-field'),
+        MarkdownNoteEditor(
           controller: _bodyController,
-          enabled: !_saving,
-          minLines: 8,
-          maxLines: null,
-          maxLength: 6000,
-          style: theme.textTheme.bodyLarge?.copyWith(height: 1.55),
-          decoration: const InputDecoration(
-            hintText: '写下此刻的想法…',
-            filled: false,
-            border: InputBorder.none,
-            enabledBorder: InputBorder.none,
-            focusedBorder: InputBorder.none,
-            contentPadding: EdgeInsets.zero,
-          ),
+          editing: _editing,
+          attachments: _note.attachments,
+          onLink: _openMarkdownLink,
         ),
-        if (includeFrame) _buildFrameSection(),
+        if (includeFrame && _note.attachments.isEmpty) _buildFrameSection(),
       ],
     );
   }
@@ -546,7 +593,7 @@ class _VideoNoteDetailPageState extends State<VideoNoteDetailPage> {
             _buildSourceCard(theme, colors),
             const SizedBox(height: 16),
             _buildMetadataChips(),
-            _buildFrameSection(),
+            if (_note.attachments.isEmpty) _buildFrameSection(),
           ],
         ),
       ),
@@ -634,14 +681,22 @@ class _VideoNoteDetailPageState extends State<VideoNoteDetailPage> {
               child: FilledButton.tonalIcon(
                 key: const Key('save-note-detail'),
                 // 顶部保存函数提交标题和正文，但保持用户停留在详情页。
-                onPressed: _saving ? null : _saveNote,
+                onPressed: _saving
+                    ? null
+                    : () {
+                        if (_editing) {
+                          unawaited(_finishEditing());
+                        } else {
+                          setState(() => _editing = true);
+                        }
+                      },
                 icon: _saving
                     ? const SizedBox.square(
                         dimension: 16,
                         child: CircularProgressIndicator(strokeWidth: 2),
                       )
                     : const Icon(Icons.save_outlined),
-                label: const Text('保存'),
+                label: Text(_editing ? '完成编辑' : '编辑'),
               ),
             ),
           ],
